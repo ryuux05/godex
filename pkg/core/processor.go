@@ -14,4 +14,3 @@ func NewProcessor(rpc *RPC, opts *Options) *Processor {
 }
 
 
-func 
