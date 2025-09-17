@@ -29,143 +29,148 @@ func NewProcessor(rpc RPC, opts *Options) *Processor {
 }
 
 func (p *Processor) Run(ctx context.Context) error{
-	// compute for new head
-	headHex, err := p.rpc.Head(ctx)
-	if err != nil {
-		return err
-	}
+	for {		
+		// compute for new head
+		headHex, err := p.rpc.Head(ctx)
+		if err != nil {
+			return err
+		}
 
-	head, err := HexQtyToUint64(headHex)
-	if err != nil {
-		return err
-	}
+		head, err := HexQtyToUint64(headHex)
+		if err != nil {
+			return err
+		}
 
-	// look for block confimation
-	var conf uint64
-	if p.opts.Confimation > 0 {
-		conf = p.opts.Confimation
-	}
+		// look for block confimation
+		var conf uint64
+		if p.opts.Confimation > 0 {
+			conf = p.opts.Confimation
+		}
 
-	// Get the target block
-	target := uint64(0)
-	if head > conf {
-		target = head - conf
-	}
+		// Get the target block
+		target := uint64(0)
+		if head > conf {
+			target = head - conf
+		}
 
-	n := p.opts.FetcherConcurrency
-	if n <= 0 {
-		n = 1
-	}
-	
-	// plan jobs
-	type blockRange struct {
-		from uint64
-		to uint64
-	}
-	jobs := make(chan blockRange ,n)
-	go func() {
-		defer close(jobs)
-		rs := uint64(p.opts.RangeSize)
+		n := p.opts.FetcherConcurrency
+		if n <= 0 {
+			n = 1
+		}
 		
-		for from := p.cursor + 1; from <= target; from += rs {
-			to := from + rs - 1
-			if to > target {
-				to = target
-			}
-
-			select {
-			case <-ctx.Done():
-				return
-			case jobs <- blockRange{from, to}:
-			}
-		} 
-	}()
-			
-			
-			
-	// create waitgroup and make error channel
-	var wg sync.WaitGroup
-	wg.Add(n)
-	errCh := make(chan error, 1)
-	
-	doneCh := make(chan blockRange, n)
+		// plan jobs
+		type blockRange struct {
+			from uint64
+			to uint64
+		}
+		jobs := make(chan blockRange ,n)
+		go func() {
+			defer close(jobs)
+			rs := uint64(p.opts.RangeSize)
 
 
-	for i := 0; i < n; i++ {
-		go func(){
-			defer wg.Done()
-			for job := range jobs {
-				filter := Filter{
-					FromBlock: Uint64ToHexQty(job.from),
-					ToBlock: Uint64ToHexQty(job.to),
+			
+			for from := p.cursor + 1; from <= target; from += rs {
+				to := from + rs - 1
+				if to > target {
+					to = target
 				}
-				logs, err := p.rpc.GetLogs(ctx, filter)
-				if err != nil {
-					select {
-					case errCh <- err:
-					default:
-						return
+
+				select {
+				case <-ctx.Done():
+					return
+				case jobs <- blockRange{from, to}:
+				}
+			} 
+		}()
+				
+				
+				
+		// create waitgroup and make error channel
+		var wg sync.WaitGroup
+		wg.Add(n)
+		errCh := make(chan error, 1)
+		
+		doneCh := make(chan blockRange, n)
+
+		for i := 0; i < n; i++ {
+			go func(){
+				defer wg.Done()
+				for job := range jobs {
+					filter := Filter{
+						FromBlock: Uint64ToHexQty(job.from),
+						ToBlock: Uint64ToHexQty(job.to),
+					}
+					logs, err := p.rpc.GetLogs(ctx, filter)
+					if err != nil {
+						select {
+						case errCh <- err:
+						default:
+							return
+						}
+					}
+					for _, log := range logs {
+						select {
+						case <-ctx.Done():
+							return
+						case p.logsCh <- log:
+						}
+					}				
+					doneCh <- blockRange{job.from, job.to}
+				}
+			}()
+		}
+
+		// close logs when fetchers finished, or early retry
+		done := make(chan struct{})
+		go func() {
+			wg.Wait()
+			close(doneCh)
+			close(done)
+		}()
+
+		// goroutine to check job windows and cursor strategy
+		go func() {
+			window := make(map[uint64]uint64)
+			next := p.cursor + 1
+
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case done, ok := <-doneCh:
+					if !ok {return};
+					window[done.from] = done.to
+
+					for end, ok2 := window[next]; ok2; end, ok2 = window[next] {
+						delete(window, next)	
+						p.cursor = end
+						next = end + 1
 					}
 				}
-				for _, log := range logs {
-					select {
-					case <-ctx.Done():
-						return
-					case p.logsCh <- log:
-					}
-				}				
-				doneCh <- blockRange{job.from, job.to}
 			}
 		}()
-	}
-	// close logs when fetchers finished, or early retry
-	done := make(chan struct{})
-	go func() {
-		wg.Wait()
-		close(doneCh)
-		close(done)
-	}()
+		
+		// listen to condition channel
+		for{
 
-	// goroutine to check job windows
-	go func() {
-		window := make(map[uint64]uint64)
-		next := p.cursor + 1
-
-		for {
 			select {
 			case <-ctx.Done():
-				return
-			case done, ok := <-doneCh:
-				if !ok {return};
-				window[done.from] = done.to
-
-				for end, ok2 := window[next]; ok2; end, ok2 = window[next] {
-					delete(window, next)	
-					p.cursor = end
-					next = end + 1
-				}
+				return nil
+			case <-done:
+			case err := <-errCh:
+				<-done
+				return err
 			}
 		}
-	}()
-
-
-	select {
-	case <-ctx.Done():
-		<-done
-	case <-done:
-	case err := <-errCh:
-		<-done
-		close(p.logsCh)
-		return err
 	}
-
-	return nil
 }
 
 func (p *Processor) AddLog() {
 
 }
 
+// return the read-only channel
 func (p *Processor) Logs() <-chan Log {
 	return p.logsCh
 }
