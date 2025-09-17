@@ -6,9 +6,12 @@ type Options struct {
 	// RangeSize is the number of blocks requested per eth_getLogs window.
 	// Larger ranges reduce round-trips but may exceed provider limits; tune per provider.
 	RangeSize int
-	// MaxParralel limits the number of concurrent range workers (RPC calls and decodes).
+	// DecoderConcurrency spawns number of goroutine for decoder
 	// Set to 1 for strictly serial processing.
-	MaxParralel int 
+	DecoderConcurrency int 
+	// FetcherConcurrency spwawns number of goroutine for fetcher.
+	// Set 1 for strictly serial fetching.
+	FetcherConcurrency int
 	// StartBlock is the inclusive block height to begin indexing from.
 	// Use 0 to let the processor derive it (e.g., from a stored cursor).
 	StartBlock uint64
@@ -19,4 +22,9 @@ type Options struct {
 	// Confirmation is used to avoid most reorgs.
 	// Eth PoS confirmation is around 5-15 for "safe"
 	Confimation uint64
+	//How many Log items can be buffered in the processor’s logs channel.
+	// 0 makes it unbuffered. 
+	// use a sane default (e.g., 1024).
+	LogsBufferSize uint64
+
 }
