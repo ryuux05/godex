@@ -17,24 +17,24 @@ type Address string
 
 type Log struct {
 	// An address from which this log originated
-	Address string
+	Address string `json:"address,omitempty"`
 	// An array of zero to four 32 Bytes DATA of indexed log arguments. 
 	// In Solidity, the first topic is the hash of the signature of the event (e.g. Deposit(address, bytes32, uint256)), except you declare the event with the anonymous specifier
-	Topics string
+	Topics []any `json:"topics,omitempty"`
 	// It contains one or more 32 Bytes non-indexed arguments of the log
-	Data string
+	Data string `json:"data,omitempty"`
 	// The block number where this log was in. null when it's a pending log
-	BlockNumber string
+	BlockNumber string `json:"blockNumber,omitempty"`
 	// The hash of the transactions this log was created from. null when its a pending log
-	TransactionHash string
+	TransactionHash string `json:"transactionHash,omitempty"`
 	// The integer of the transaction's index position that the log was created from. null when it's a pending log
-	TransactionIndex int32
+	TransactionIndex string `json:"transactionIndex,omitempty"`
 	// The hash of the block where this log was in. null when it's a pending log
-	BlockHash string
+	BlockHash string `json:"blockHash,omitempty"`
 	// The integer of the log index position in the block. null when it's a pending log
-	LogIndex string
+	LogIndex string `json:"logIndex,omitempty"`
 	// The integer of the log index position in the block. null when it's a pending log
-	Removed string
+	Removed bool `json:"removed,omitempty"`
 }
 
 type Event struct {
@@ -43,15 +43,15 @@ type Event struct {
 
 type Filter struct {
 	// The block number as a string in hexadecimal format or tags.
-	FromBlock string
+	FromBlock string `json:"fromBlock"`
 	// The block number as a string in hexadecimal format or tags.
-	ToBlock string
+	ToBlock string `json:"toBlock"`
 	// The contract address or a list of addresses from which logs should originate
-	Address []string
+	Address []string `json:"address,omitempty"`
 	// An array of DATA topics and also, the topics are order-dependent. Visit this official page to learn more about topics
-	Topics []string
+	Topics []any `json:"topics,omitempty"`   // positional; omit if unused
 	// Using the blockHash field is equivalent to setting the fromBlock and toBlock to the block number the blockHash references. If blockHash is present in the filter criteria, neither fromBlock nor toBlock is allowed
-	BlockHash string
+	BlockHash string `json:"blockHash,omitempty"`
 }
 
 type Cursor struct {

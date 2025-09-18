@@ -138,14 +138,14 @@ func TestGetLogs_Success(t *testing.T) {
 			"result": []map[string]any{
 				{
 					"Address":          "0xabc",
-					"Topics":           "0xddf252ad",
+					"Topics":           []any{"0xddf252ad"},
 					"Data":             "0x01",
 					"BlockNumber":      "0x1",
 					"TransactionHash":  "0xth1",
-					"TransactionIndex": int32(0),
+					"TransactionIndex": "0",
 					"BlockHash":        "0xbh1",
 					"LogIndex":         "0x0",
-					"Removed":          "false",
+					"Removed":          false,
 				},
 			},
 		})
@@ -160,13 +160,13 @@ func TestGetLogs_Success(t *testing.T) {
 		FromBlock: "0x1",
 		ToBlock:   "0x2",
 		Address:   []string{"0xabc"},
-		Topics:    []string{"0xddf252ad"},
+		Topics:    []any{"0xddf252ad"},
 	}
 	logs, err := rpc.GetLogs(ctx, filter)
 	assert.NoError(t, err)
 	assert.Len(t, logs, 1)
 	assert.Equal(t, "0xabc", logs[0].Address)
-	assert.Equal(t, "0xddf252ad", logs[0].Topics)
+	assert.Equal(t,[]any{"0xddf252ad"}, logs[0].Topics)
 	assert.Equal(t, "0x1", logs[0].BlockNumber)
 }
 

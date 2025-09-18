@@ -100,6 +100,8 @@ func (p *Processor) Run(ctx context.Context) error{
 					filter := Filter{
 						FromBlock: Uint64ToHexQty(job.from),
 						ToBlock: Uint64ToHexQty(job.to),
+						Topics: []any {
+							"0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"},
 					}
 					logs, err := p.rpc.GetLogs(ctx, filter)
 					if err != nil {

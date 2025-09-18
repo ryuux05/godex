@@ -32,6 +32,9 @@ type rpcResponse[T any] struct {
 	Error *rpcError `json:"error"`
 }
 
+// NewHTTPRPC creates an HTTP JSON-RPC client.
+// endpoint is the base RPC URL (e.g., https://...).
+// rateLimit is the maximum requests per second (0 disables limiting).
 func NewHTTPRPC(endpoint string, rateLimit uint16) *HTTPRPC {
 	return &HTTPRPC{
 		endpoint: endpoint,
