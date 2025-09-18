@@ -43,14 +43,14 @@ func TestRunWithOneLog_Success(t *testing.T) {
 				"result": []map[string]any{
 					{
 						"Address":          "0xabc",
-						"Topics":           "0xddf252ad", // your Log.Topics is string in current code
+						"Topics": []any{"0xddf252ad"},
 						"Data":             "0x",
 						"BlockNumber":      "0x1",
 						"TransactionHash":  "0xth1",
-						"TransactionIndex": int32(0),
+						"TransactionIndex": "0",
 						"BlockHash":        "0xbh1",
 						"LogIndex":         "0x0",
-						"Removed":          "false",
+						"Removed":          false,
 					},
 				},
 			})
@@ -84,13 +84,13 @@ func TestRunWithOneLog_Success(t *testing.T) {
 	cancel()
 
 	assert.Equal(t, log.Address, "0xabc")
-	assert.Equal(t, log.Topics, "0xddf252ad")
+	assert.Equal(t, log.Topics, []any{"0xddf252ad"})
 	assert.Equal(t, log.Data, "0x")
 	assert.Equal(t, log.BlockNumber, "0x1")
 	assert.Equal(t, log.TransactionHash, "0xth1")
-	assert.Equal(t, log.TransactionIndex, int32(0))
+	assert.Equal(t, log.TransactionIndex, "0")
 	assert.Equal(t, log.LogIndex, "0x0")
-	assert.Equal(t, log.Removed, "false")
+	assert.Equal(t, log.Removed, false)
 }
 
 func TestRunWithMultipleLog_Success(t *testing.T) {
@@ -123,58 +123,58 @@ func TestRunWithMultipleLog_Success(t *testing.T) {
 				"result": []map[string]any{
 					{
 						"Address":          "0xabc",
-						"Topics":           "0xddf252ad", // your Log.Topics is string in current code
+						"Topics": []any{"0xddf252ad"},
 						"Data":             "0x",
 						"BlockNumber":      "0x1",
 						"TransactionHash":  "0xth1",
-						"TransactionIndex": int32(0),
+						"TransactionIndex": "0",
 						"BlockHash":        "0xbh1",
 						"LogIndex":         "0x0",
-						"Removed":          "false",
+						"Removed":          false,
 					},
 					{
 						"Address":          "0xabcd",
-						"Topics":           "0xddf252ad", // your Log.Topics is string in current code
+						"Topics": []any{"0xddf252ad"},
 						"Data":             "0x",
 						"BlockNumber":      "0x1",
 						"TransactionHash":  "0xth1",
-						"TransactionIndex": int32(0),
+						"TransactionIndex": "0",
 						"BlockHash":        "0xbh1",
 						"LogIndex":         "0x0",
-						"Removed":          "false",
+						"Removed":          false,
 					},
 					{
 						"Address":          "0xabcde",
-						"Topics":           "0xddf252ad", // your Log.Topics is string in current code
+						"Topics": []any{"0xddf252ad"},
 						"Data":             "0x",
 						"BlockNumber":      "0x1",
 						"TransactionHash":  "0xth1",
-						"TransactionIndex": int32(0),
+						"TransactionIndex": "0",
 						"BlockHash":        "0xbh1",
 						"LogIndex":         "0x0",
-						"Removed":          "false",
+						"Removed":          false,
 					},
 					{
 						"Address":          "0xabcdef",
-						"Topics":           "0xddf252ad", // your Log.Topics is string in current code
+						"Topics": []any{"0xddf252ad"},
 						"Data":             "0x",
 						"BlockNumber":      "0x1",
 						"TransactionHash":  "0xth1",
-						"TransactionIndex": int32(0),
+						"TransactionIndex": "0",
 						"BlockHash":        "0xbh1",
 						"LogIndex":         "0x0",
-						"Removed":          "false",
+						"Removed":          false,
 					},
 					{
 						"Address":          "0xabcdefg",
-						"Topics":           "0xddf252ad", // your Log.Topics is string in current code
+						"Topics": []any{"0xddf252ad"},
 						"Data":             "0x",
 						"BlockNumber":      "0x1",
 						"TransactionHash":  "0xth1",
-						"TransactionIndex": int32(0),
+						"TransactionIndex": "0",
 						"BlockHash":        "0xbh1",
 						"LogIndex":         "0x0",
-						"Removed":          "false",
+						"Removed":          false,
 					},
 				},
 			})
@@ -193,7 +193,7 @@ func TestRunWithMultipleLog_Success(t *testing.T) {
 		RangeSize:          50,
 		BatchSize:          50,
 		DecoderConcurrency: 2,
-		FetcherConcurrency: 2,
+		FetcherConcurrency: 4,
 		StartBlock:         0,
 		Confimation:        0,
 		LogsBufferSize:     1024,
@@ -210,7 +210,7 @@ func TestRunWithMultipleLog_Success(t *testing.T) {
 	var mu sync.Mutex
 
 	go func() {
-		defer close(done)
+		defer close(done) // remove the block when the channel is closed.
 		for {	
 			select{
 			case <- ctx.Done():
@@ -226,7 +226,7 @@ func TestRunWithMultipleLog_Success(t *testing.T) {
 		}
 	}()
 
-	<- done
+	<- done // blocks the the test
 
 	assert.Equal(t, len(logs), 6895)
 	assert.Equal(t, logs[0].Address, "0xabc")
