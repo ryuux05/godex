@@ -1,9 +1,6 @@
 ---
 name: "development issue template
 about: "template to guide developers to open new development related issue"
-title: 
-labels: 
-assignees: ""
 ---
 
 ## Goal
