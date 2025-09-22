@@ -22,6 +22,8 @@ type Processor struct {
 	storedWindowHash map[uint64]string
 	// Number that bound how many hash could be store in storedWindowHash
 	storedWindowHashCap uint64
+	// The number of block that we will fall back to in case we couldnt resolve reorg
+	hardFallbackBlocks uint64
 	// options for processor
 	opts *Options
 }
@@ -43,6 +45,7 @@ func NewProcessor(rpc RPC, opts *Options) *Processor {
 		logsCh: make(chan Log, opts.LogsBufferSize),
 		storedWindowHashCap: cap,
 		storedWindowHash: make(map[uint64]string, cap),
+		hardFallbackBlocks: 1000,
 	}
 }
 
@@ -178,7 +181,9 @@ func (p *Processor) Run(ctx context.Context) error{
 						if (block.ParentHash != blockHash[next - 1]) {
 							log.Println("Hash mismatch, reorg happened...")
 							rpcCancel()
-							p.handleReorg()
+							ancestor := p.handleReorg(ctx)
+
+							p.cursor = ancestor
 							return
 						}
 
@@ -221,18 +226,70 @@ func (p *Processor) Logs() <-chan Log {
 	return p.logsCh
 }
 
-func (p *Processor) handleReorg() {
+// During ancestor lookup we start from the cursor window and get to the window head and compare to the previous window
+func (p *Processor) handleReorg(ctx context.Context) uint64 {
+	ancestor := p.cursor
+	for i := uint64(0); i < p.storedWindowHashCap; i++ {
 
+		windowHeadBlock, err := p.rpc.GetBlock(ctx, Uint64ToHexQty(ancestor + 1))
+		if err != nil {
+			fallback := p.cursor - min(p.cursor, p.hardFallbackBlocks)
+			return fallback
+		}
+		
+		if windowHeadBlock.ParentHash == p.storedWindowHash[ancestor] {
+			p.dropWindowHash(ancestor)
+			return ancestor
+		}
+		
+		if ancestor < uint64(p.opts.RangeSize) {
+			ancestor = 0
+			break
+		}
+		ancestor -= uint64(p.opts.RangeSize)
+
+		select{
+		case<- ctx.Done():
+			fallback := p.cursor - min(p.cursor, p.hardFallbackBlocks)
+			return fallback
+		default:
+		}
+	}
+	fallback := p.cursor - min(p.cursor, p.hardFallbackBlocks)
+	log.Println("Hard fallback triggered...")
+	if fallback <= 0 {
+		fallback = 0
+	}
+	p.dropWindowHash(fallback)
+	return fallback
 }
 
 func (p *Processor) storeWindowHash(to uint64, blockHash string) {
-	l := len(p.windowOrder)
-	if uint64(l) >= p.storedWindowHashCap {
-		old := p.windowOrder[0]
-		delete(p.storedWindowHash, old)
-		p.windowOrder = p.windowOrder[1:]
+	_, exist := p.storedWindowHash[to]
+	if exist {
+		p.storedWindowHash[to] = blockHash
+	}else {
+		l := len(p.windowOrder)
+		if uint64(l) >= p.storedWindowHashCap {
+			old := p.windowOrder[0]
+			delete(p.storedWindowHash, old)
+			p.windowOrder = p.windowOrder[1:]
+		}
+
+		p.storedWindowHash[to] = blockHash
+		p.windowOrder = append(p.windowOrder, to)
 	}
-	p.storedWindowHash[to] = blockHash
+}
+
+func (p *Processor) dropWindowHash(after uint64) {
+		// walk tail backward removing entries > after
+		i := len(p.windowOrder) - 1
+		for i >= 0 && p.windowOrder[i] > after {
+			delete(p.storedWindowHash, p.windowOrder[i])
+			i--
+		}
+		// keep [0..i]
+		p.windowOrder = p.windowOrder[:i+1]
 }
 
 
