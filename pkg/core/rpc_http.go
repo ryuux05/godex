@@ -89,7 +89,7 @@ func(r *HTTPRPC) Head(ctx context.Context) (string, error) {
 	return resp.Result, nil
 }
 
-// GetBlock returns the block header for now
+// GetBlock returns the block header for now (second params is set to false)
 func(r *HTTPRPC) GetBlock(ctx context.Context, blockNumber string) (Block, error) {
 	body := map[string]interface{} {
 		"jsonrpc": "2.0",

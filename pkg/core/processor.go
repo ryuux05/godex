@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"log"
 	"sync"
 )
 
@@ -10,28 +11,49 @@ type Processor struct {
 	// RPC instances where the indexer going to quer
 	// Specify endpoint and rate-limit
 	rpc RPC 
-	// Cursor is a pointer that points the current block where the indexer is pointing 
+	// cursor is a pointer that points the current block where the indexer is pointing 
 	cursor uint64
 	// logsChan is a channel where processor will store the indexed logs
 	logsCh chan Log
+	// FIFO of endHeights in commit order
+	windowOrder []uint64
+	// Store block hash to compare the next block parent hash.
+	// We need this in order to detect reorg happening.
+	storedWindowHash map[uint64]string
+	// Number that bound how many hash could be store in storedWindowHash
+	storedWindowHashCap uint64
+	// options for processor
 	opts *Options
 }
 
 func NewProcessor(rpc RPC, opts *Options) *Processor {
 	cursor := opts.StartBlock; if cursor == 0 { cursor = 0 }
 
+	// Clamp the max storedwindowhash bound.
+	rs := uint64(opts.RangeSize)         // assume >0
+	base := (opts.ReorgLookbackBlocks + rs - 1) / rs // ceil
+	cap := base + 1
+	if cap < 8 { cap = 8 }
+	if cap > 256 { cap = 256 }
+
 	return &Processor{
 		rpc: rpc,
 		opts: opts,
 		cursor: cursor,
 		logsCh: make(chan Log, opts.LogsBufferSize),
+		storedWindowHashCap: cap,
+		storedWindowHash: make(map[uint64]string, cap),
 	}
 }
 
 func (p *Processor) Run(ctx context.Context) error{
+	
 	for {		
+		rpcCtx, rpcCancel := context.WithCancel(ctx)
+		defer rpcCancel()
+		
 		// compute for new head
-		headHex, err := p.rpc.Head(ctx)
+		headHex, err := p.rpc.Head(rpcCtx)
 		if err != nil {
 			return err
 		}
@@ -103,7 +125,7 @@ func (p *Processor) Run(ctx context.Context) error{
 						Topics: []any {
 							"0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"},
 					}
-					logs, err := p.rpc.GetLogs(ctx, filter)
+					logs, err := p.rpc.GetLogs(rpcCtx, filter)
 					if err != nil {
 						select {
 						case errCh <- err:
@@ -134,6 +156,7 @@ func (p *Processor) Run(ctx context.Context) error{
 		// goroutine to check job windows and cursor strategy
 		go func() {
 			window := make(map[uint64]uint64)
+			blockHash := make(map[uint64]string)
 			next := p.cursor + 1
 
 			for {
@@ -145,9 +168,30 @@ func (p *Processor) Run(ctx context.Context) error{
 					window[done.from] = done.to
 
 					for end, ok2 := window[next]; ok2; end, ok2 = window[next] {
+						// Get start window blockhash and compare it with the stored blockhash
+						block, err := p.rpc.GetBlock(rpcCtx, Uint64ToHexQty(next))
+						if err != nil {
+							return
+						}
+
+						//Compare to parents
+						if (block.ParentHash != blockHash[next - 1]) {
+							log.Println("Hash mismatch, reorg happened...")
+							rpcCancel()
+							p.handleReorg()
+							return
+						}
+
 						delete(window, next)	
 						p.cursor = end
 						next = end + 1
+
+						// Get the end block blockhash after committing
+						block, err = p.rpc.GetBlock(ctx, Uint64ToHexQty(end))
+						if err != nil {
+							return
+						}
+						p.storeWindowHash(done.to, block.Hash)
 					}
 				}
 			}
@@ -176,5 +220,21 @@ func (p *Processor) AddLog() {
 func (p *Processor) Logs() <-chan Log {
 	return p.logsCh
 }
+
+func (p *Processor) handleReorg() {
+
+}
+
+func (p *Processor) storeWindowHash(to uint64, blockHash string) {
+	l := len(p.windowOrder)
+	if uint64(l) >= p.storedWindowHashCap {
+		old := p.windowOrder[0]
+		delete(p.storedWindowHash, old)
+		p.windowOrder = p.windowOrder[1:]
+	}
+	p.storedWindowHash[to] = blockHash
+}
+
+
 
 

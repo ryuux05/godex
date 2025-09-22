@@ -26,5 +26,8 @@ type Options struct {
 	// 0 makes it unbuffered. 
 	// use a sane default (e.g., 1024).
 	LogsBufferSize uint64
+	// ReorgLookbackBlocks is the maximum number of blocks to walk back when detecting a reorg. Used to bound header lookups and the size of stored window hashes.
+	// Default: 64 (good starting point)
+	ReorgLookbackBlocks uint64
 
 }
