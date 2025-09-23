@@ -77,7 +77,7 @@ func TestGetBlock_Success(t *testing.T) {
 				"Number":     "0x3039",
 				"Hash":       "0xabc",
 				"ParentHash": "0xdef",
-				"Timestamp":  uint64(1700000000),
+				"Timestamp":  "1700000000",
 			},
 		})
 	}))
@@ -92,7 +92,7 @@ func TestGetBlock_Success(t *testing.T) {
 	assert.Equal(t, "0x3039", got.Number)
 	assert.Equal(t, "0xabc", got.Hash)
 	assert.Equal(t, "0xdef", got.ParentHash)
-	assert.Equal(t, uint64(1700000000), got.Timestamp)
+	assert.Equal(t, "1700000000", got.Timestamp)
 }
 
 func TestGetBlock_RPCError(t *testing.T) {

@@ -131,7 +131,7 @@ func TestRunWithMultipleLog_Success(t *testing.T) {
 					"Number": req.Params[0],
 					"Hash": req.Params[0],
 					"ParentHash": Uint64ToHexQty(blockNum - 1), 
-					"Timestamp": uint64(time.Now().Unix()),
+					"Timestamp": fmt.Sprintf("%d",time.Now().Unix()),
 				},
 			})
 

@@ -10,7 +10,7 @@ type Block struct {
 	// The previous block hash
 	ParentHash string
 	// The time the block is created
-	Timestamp uint64
+	Timestamp string
 }
 
 type Address string
