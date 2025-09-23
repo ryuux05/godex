@@ -4,7 +4,7 @@ const ZeroAddress Address = "0x0000000000000000000000000000000000000000"
 
 type Block struct {
 	// Current block number
-	Number uint64
+	Number string
 	// The hash of the block
 	Hash string
 	// The previous block hash

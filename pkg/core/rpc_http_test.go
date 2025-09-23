@@ -74,7 +74,7 @@ func TestGetBlock_Success(t *testing.T) {
 			"jsonrpc": "2.0",
 			"id":      1,
 			"result": map[string]any{
-				"Number":     uint64(12345),
+				"Number":     "0x3039",
 				"Hash":       "0xabc",
 				"ParentHash": "0xdef",
 				"Timestamp":  uint64(1700000000),
@@ -89,7 +89,7 @@ func TestGetBlock_Success(t *testing.T) {
 
 	got, err := rpc.GetBlock(ctx, "0x3039") // "0x3039" == 12345
 	assert.NoError(t, err)
-	assert.Equal(t, uint64(12345), got.Number)
+	assert.Equal(t, "0x3039", got.Number)
 	assert.Equal(t, "0xabc", got.Hash)
 	assert.Equal(t, "0xdef", got.ParentHash)
 	assert.Equal(t, uint64(1700000000), got.Timestamp)

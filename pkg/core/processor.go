@@ -53,16 +53,18 @@ func (p *Processor) Run(ctx context.Context) error{
 	
 	for {		
 		rpcCtx, rpcCancel := context.WithCancel(ctx)
-		defer rpcCancel()
 		
 		// compute for new head
 		headHex, err := p.rpc.Head(rpcCtx)
 		if err != nil {
+			rpcCancel()
 			return err
 		}
 
 		head, err := HexQtyToUint64(headHex)
 		if err != nil {
+			log.Println("Error in converting hex to uint64", err)
+			rpcCancel()
 			return err
 		}
 
@@ -159,7 +161,6 @@ func (p *Processor) Run(ctx context.Context) error{
 		// goroutine to check job windows and cursor strategy
 		go func() {
 			window := make(map[uint64]uint64)
-			blockHash := make(map[uint64]string)
 			next := p.cursor + 1
 
 			for {
@@ -174,11 +175,19 @@ func (p *Processor) Run(ctx context.Context) error{
 						// Get start window blockhash and compare it with the stored blockhash
 						block, err := p.rpc.GetBlock(rpcCtx, Uint64ToHexQty(next))
 						if err != nil {
-							return
+							if rpcCtx.Err() != nil { return }        // batch was canceled; ignore
+
+							log.Println("Error getting window start block: ", err)
+							select { case errCh <- err: default: }
+						}
+
+						if next == 0 {
+							break
 						}
 
 						//Compare to parents
-						if (block.ParentHash != blockHash[next - 1]) {
+						parent, ok := p.storedWindowHash[next - 1]
+						if (ok && block.ParentHash != parent) {
 							log.Println("Hash mismatch, reorg happened...")
 							rpcCancel()
 							ancestor := p.handleReorg(ctx)
@@ -192,10 +201,14 @@ func (p *Processor) Run(ctx context.Context) error{
 						next = end + 1
 
 						// Get the end block blockhash after committing
-						block, err = p.rpc.GetBlock(ctx, Uint64ToHexQty(end))
+						block, err = p.rpc.GetBlock(rpcCtx, Uint64ToHexQty(end))
 						if err != nil {
+							if rpcCtx.Err() != nil { return }        // batch was canceled; ignore
+							log.Println("Error getting window end block: ", err)
+							select { case errCh <- err: default: }
 							return
 						}
+						log.Printf("Processed log from block %d to block %d\n", done.from, done.to)
 						p.storeWindowHash(done.to, block.Hash)
 					}
 				}
@@ -210,6 +223,8 @@ func (p *Processor) Run(ctx context.Context) error{
 				return nil
 			case <-done:
 			case err := <-errCh:
+				log.Println("Error received cancelling context")
+				rpcCancel()
 				<-done
 				return err
 			}
@@ -231,9 +246,10 @@ func (p *Processor) handleReorg(ctx context.Context) uint64 {
 	ancestor := p.cursor
 	for i := uint64(0); i < p.storedWindowHashCap; i++ {
 
+		fallback := p.cursor; if fallback > p.hardFallbackBlocks { fallback -= p.hardFallbackBlocks } else { fallback = 0 }
+
 		windowHeadBlock, err := p.rpc.GetBlock(ctx, Uint64ToHexQty(ancestor + 1))
 		if err != nil {
-			fallback := p.cursor - min(p.cursor, p.hardFallbackBlocks)
 			return fallback
 		}
 		
@@ -250,12 +266,11 @@ func (p *Processor) handleReorg(ctx context.Context) uint64 {
 
 		select{
 		case<- ctx.Done():
-			fallback := p.cursor - min(p.cursor, p.hardFallbackBlocks)
 			return fallback
 		default:
 		}
 	}
-	fallback := p.cursor - min(p.cursor, p.hardFallbackBlocks)
+	fallback := p.cursor; if fallback > p.hardFallbackBlocks { fallback -= p.hardFallbackBlocks } else { fallback = 0 }
 	log.Println("Hard fallback triggered...")
 	if fallback <= 0 {
 		fallback = 0
@@ -288,7 +303,7 @@ func (p *Processor) dropWindowHash(after uint64) {
 			delete(p.storedWindowHash, p.windowOrder[i])
 			i--
 		}
-		// keep [0..i]
+
 		p.windowOrder = p.windowOrder[:i+1]
 }
 

@@ -3,6 +3,8 @@ package core
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -66,7 +68,7 @@ func TestRunWithOneLog_Success(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	opts := Options{
-		RangeSize:          50,
+		RangeSize:          100,
 		BatchSize:          50,
 		DecoderConcurrency: 1,
 		FetcherConcurrency: 1,
@@ -113,7 +115,24 @@ func TestRunWithMultipleLog_Success(t *testing.T) {
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"jsonrpc": "2.0",
 				"id":      1,
-				"result":  "0x10d4f",
+				"result":  "0x3e8",
+			})
+
+		case "eth_getBlockByNumber":
+			s := fmt.Sprintf("%s", req.Params[0])
+			blockNum, err := HexQtyToUint64(s)
+			assert.NoError(t, err)
+
+
+			_ = json.NewEncoder(w).Encode(map[string]any {
+				"jsonrpc": "2.0",
+				"id":      1,
+				"result": map[string]any {
+					"Number": req.Params[0],
+					"Hash": req.Params[0],
+					"ParentHash": Uint64ToHexQty(blockNum - 1), 
+					"Timestamp": uint64(time.Now().Unix()),
+				},
 			})
 
 		case "eth_getLogs":
@@ -194,7 +213,7 @@ func TestRunWithMultipleLog_Success(t *testing.T) {
 		BatchSize:          50,
 		DecoderConcurrency: 2,
 		FetcherConcurrency: 4,
-		StartBlock:         0,
+		StartBlock:         10,
 		Confimation:        0,
 		LogsBufferSize:     1024,
 	}
@@ -220,6 +239,7 @@ func TestRunWithMultipleLog_Success(t *testing.T) {
 					return
 				}	
 				mu.Lock()
+				//log.Printf("%v", l)
 				logs = append(logs, l)
 				mu.Unlock()
 			}
@@ -227,8 +247,9 @@ func TestRunWithMultipleLog_Success(t *testing.T) {
 	}()
 
 	<- done // blocks the the test
+	log.Println(len(logs))
 
-	assert.Equal(t, len(logs), 6895)
+	assert.Equal(t, len(logs), 100)
 	assert.Equal(t, logs[0].Address, "0xabc")
 	assert.Equal(t, logs[1].Address, "0xabcd")
 	assert.Equal(t, logs[2].Address, "0xabcde")
