@@ -50,10 +50,10 @@ func NewProcessor(rpc RPC, opts *Options) *Processor {
 }
 
 func (p *Processor) Run(ctx context.Context) error{
-	
+outer:
 	for {		
 		rpcCtx, rpcCancel := context.WithCancel(ctx)
-		
+
 		// compute for new head
 		headHex, err := p.rpc.Head(rpcCtx)
 		if err != nil {
@@ -95,8 +95,6 @@ func (p *Processor) Run(ctx context.Context) error{
 			defer close(jobs)
 			rs := uint64(p.opts.RangeSize)
 
-
-			
 			for from := p.cursor + 1; from <= target; from += rs {
 				to := from + rs - 1
 				if to > target {
@@ -104,26 +102,32 @@ func (p *Processor) Run(ctx context.Context) error{
 				}
 
 				select {
-				case <-ctx.Done():
+				case <-rpcCtx.Done():
 					return
 				case jobs <- blockRange{from, to}:
+				//log.Printf("planned job from block %d to block %d...\n", from, to)
 				}
 			} 
-		}()
-				
-				
+		}()	
 				
 		// create waitgroup and make error channel
 		var wg sync.WaitGroup
 		wg.Add(n)
 		errCh := make(chan error, 1)
+
+		type doneMsg struct {
+			from uint64
+			to uint64
+			logs []Log
+		}
 		
-		doneCh := make(chan blockRange, n)
+		doneCh := make(chan doneMsg, n)
 
 		for i := 0; i < n; i++ {
 			go func(){
 				defer wg.Done()
 				for job := range jobs {
+					//log.Printf("getting job from block %d to block %d...\n", job.from, job.to)
 					filter := Filter{
 						FromBlock: Uint64ToHexQty(job.from),
 						ToBlock: Uint64ToHexQty(job.to),
@@ -132,20 +136,21 @@ func (p *Processor) Run(ctx context.Context) error{
 					}
 					logs, err := p.rpc.GetLogs(rpcCtx, filter)
 					if err != nil {
+						log.Println("Error fetching logs: ", err)
 						select {
 						case errCh <- err:
+							return
 						default:
 							return
 						}
 					}
-					for _, log := range logs {
-						select {
-						case <-ctx.Done():
+					//log.Printf("Here")
+					select {
+						case <-rpcCtx.Done():
 							return
-						case p.logsCh <- log:
-						}
-					}				
-					doneCh <- blockRange{job.from, job.to}
+						case doneCh <- doneMsg{from: job.from, to: job.to, logs: logs}:
+							//log.Printf("sending log to arbiter from block %d to block %d...\n", job.from, job.to)
+					}	
 				}
 			}()
 		}
@@ -159,32 +164,44 @@ func (p *Processor) Run(ctx context.Context) error{
 		}()
 
 		// goroutine to check job windows and cursor strategy
+		arbiterDone := make(chan struct{})
 		go func() {
+			defer close(arbiterDone)
 			window := make(map[uint64]uint64)
+			windowLogs:= make(map[uint64][]Log)
 			next := p.cursor + 1
 
 			for {
 				select {
-				case <-ctx.Done():
+				case <-rpcCtx.Done():
 					return
-				case done, ok := <-doneCh:
+				case dm, ok := <-doneCh:
 					if !ok {return};
-					window[done.from] = done.to
+					
+					window[dm.from] = dm.to
+					windowLogs[dm.from] = dm.logs
 
 					for end, ok2 := window[next]; ok2; end, ok2 = window[next] {
+						
 						// Get start window blockhash and compare it with the stored blockhash
 						block, err := p.rpc.GetBlock(rpcCtx, Uint64ToHexQty(next))
 						if err != nil {
-							if rpcCtx.Err() != nil { return }        // batch was canceled; ignore
-
-							log.Println("Error getting window start block: ", err)
-							select { case errCh <- err: default: }
+							if rpcCtx.Err() != nil { 
+								return 
+							} else {    
+								select { 
+									case errCh <- err: 
+									default: 
+								} 
+								return
+							}
 						}
 
+						
 						if next == 0 {
 							break
 						}
-
+						
 						//Compare to parents
 						parent, ok := p.storedWindowHash[next - 1]
 						if (ok && block.ParentHash != parent) {
@@ -194,12 +211,26 @@ func (p *Processor) Run(ctx context.Context) error{
 
 							p.cursor = ancestor
 							return
+
+						} else {
+							log.Printf("Processed log from block %d to block %d...\n", next, end)
+							// Commit logs to log channel
+							if logs := windowLogs[next]; len(logs) > 0 {
+								for _, l:= range logs {
+								  select {
+								  case <-rpcCtx.Done():
+									return
+								  case p.logsCh <- l:
+								  }
+								}
+							}
+							
+							delete(windowLogs, next)
+							delete(window, next)	
+							p.cursor = end
+							next = end + 1
 						}
-
-						delete(window, next)	
-						p.cursor = end
-						next = end + 1
-
+						
 						// Get the end block blockhash after committing
 						block, err = p.rpc.GetBlock(rpcCtx, Uint64ToHexQty(end))
 						if err != nil {
@@ -208,8 +239,8 @@ func (p *Processor) Run(ctx context.Context) error{
 							select { case errCh <- err: default: }
 							return
 						}
-						log.Printf("Processed log from block %d to block %d\n", done.from, done.to)
-						p.storeWindowHash(done.to, block.Hash)
+
+						p.storeWindowHash(end, block.Hash)
 					}
 				}
 			}
@@ -217,17 +248,27 @@ func (p *Processor) Run(ctx context.Context) error{
 		
 		// listen to condition channel
 		for{
-
 			select {
-			case <-ctx.Done():
-				return nil
+			case <-rpcCtx.Done():
+				<- done
+				<- arbiterDone
+				continue outer
 			case <-done:
+				<- arbiterDone
+				continue outer
 			case err := <-errCh:
 				log.Println("Error received cancelling context")
 				rpcCancel()
 				<-done
+				<- arbiterDone
 				return err
+			case <- ctx.Done():
+				rpcCancel()
+				<- done
+				<- arbiterDone
+				return nil
 			}
+
 		}
 	}
 }
@@ -255,6 +296,7 @@ func (p *Processor) handleReorg(ctx context.Context) uint64 {
 		
 		if windowHeadBlock.ParentHash == p.storedWindowHash[ancestor] {
 			p.dropWindowHash(ancestor)
+			log.Println("Found ancestor: ", ancestor)
 			return ancestor
 		}
 		
