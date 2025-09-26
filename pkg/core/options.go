@@ -29,5 +29,6 @@ type Options struct {
 	// ReorgLookbackBlocks is the maximum number of blocks to walk back when detecting a reorg. Used to bound header lookups and the size of stored window hashes.
 	// Default: 64 (good starting point)
 	ReorgLookbackBlocks uint64
-
+	// Topics is the event for indexer to listen and get the log
+	Topics []string
 }

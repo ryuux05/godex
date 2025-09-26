@@ -24,6 +24,8 @@ type Processor struct {
 	storedWindowHashCap uint64
 	// The number of block that we will fall back to in case we couldnt resolve reorg
 	hardFallbackBlocks uint64
+	// Storage to store the formatted topics
+	topics []string
 	// options for processor
 	opts *Options
 }
@@ -38,6 +40,8 @@ func NewProcessor(rpc RPC, opts *Options) *Processor {
 	if cap < 8 { cap = 8 }
 	if cap > 256 { cap = 256 }
 
+	topics := ConvertToTopics(opts.Topics)
+
 	return &Processor{
 		rpc: rpc,
 		opts: opts,
@@ -46,6 +50,7 @@ func NewProcessor(rpc RPC, opts *Options) *Processor {
 		storedWindowHashCap: cap,
 		storedWindowHash: make(map[uint64]string, cap),
 		hardFallbackBlocks: 1000,
+		topics: topics,
 	}
 }
 
@@ -131,8 +136,7 @@ outer:
 					filter := Filter{
 						FromBlock: Uint64ToHexQty(job.from),
 						ToBlock: Uint64ToHexQty(job.to),
-						Topics: []any {
-							"0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"},
+						Topics: p.topics,
 					}
 					logs, err := p.rpc.GetLogs(rpcCtx, filter)
 					if err != nil {
@@ -271,10 +275,6 @@ outer:
 
 		}
 	}
-}
-
-func (p *Processor) AddLog() {
-
 }
 
 // return the read-only channel

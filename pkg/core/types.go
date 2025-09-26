@@ -48,8 +48,12 @@ type Filter struct {
 	ToBlock string `json:"toBlock"`
 	// The contract address or a list of addresses from which logs should originate
 	Address []string `json:"address,omitempty"`
-	// An array of DATA topics and also, the topics are order-dependent. Visit this official page to learn more about topics
-	Topics []any `json:"topics,omitempty"`   // positional; omit if unused
+	// An array of DATA topics and also, the topics are order-dependent.
+	// Topics can be either:
+	// - Function signatures like "Transfer(address,address,uint256)"
+	// - Keccal256 hashes like "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"
+	// - Keccak256 hashes only like "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"
+	Topics []string `json:"topics,omitempty"`   // positional; omit if unused
 	// Using the blockHash field is equivalent to setting the fromBlock and toBlock to the block number the blockHash references. If blockHash is present in the filter criteria, neither fromBlock nor toBlock is allowed
 	BlockHash string `json:"blockHash,omitempty"`
 }

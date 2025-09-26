@@ -160,7 +160,7 @@ func TestGetLogs_Success(t *testing.T) {
 		FromBlock: "0x1",
 		ToBlock:   "0x2",
 		Address:   []string{"0xabc"},
-		Topics:    []any{"0xddf252ad"},
+		Topics:    []string{"0xddf252ad"},
 	}
 	logs, err := rpc.GetLogs(ctx, filter)
 	assert.NoError(t, err)
