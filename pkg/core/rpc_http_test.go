@@ -74,10 +74,10 @@ func TestGetBlock_Success(t *testing.T) {
 			"jsonrpc": "2.0",
 			"id":      1,
 			"result": map[string]any{
-				"Number":     uint64(12345),
+				"Number":     "0x3039",
 				"Hash":       "0xabc",
 				"ParentHash": "0xdef",
-				"Timestamp":  uint64(1700000000),
+				"Timestamp":  "1700000000",
 			},
 		})
 	}))
@@ -89,10 +89,10 @@ func TestGetBlock_Success(t *testing.T) {
 
 	got, err := rpc.GetBlock(ctx, "0x3039") // "0x3039" == 12345
 	assert.NoError(t, err)
-	assert.Equal(t, uint64(12345), got.Number)
+	assert.Equal(t, "0x3039", got.Number)
 	assert.Equal(t, "0xabc", got.Hash)
 	assert.Equal(t, "0xdef", got.ParentHash)
-	assert.Equal(t, uint64(1700000000), got.Timestamp)
+	assert.Equal(t, "1700000000", got.Timestamp)
 }
 
 func TestGetBlock_RPCError(t *testing.T) {
@@ -160,7 +160,7 @@ func TestGetLogs_Success(t *testing.T) {
 		FromBlock: "0x1",
 		ToBlock:   "0x2",
 		Address:   []string{"0xabc"},
-		Topics:    []any{"0xddf252ad"},
+		Topics:    []string{"0xddf252ad"},
 	}
 	logs, err := rpc.GetLogs(ctx, filter)
 	assert.NoError(t, err)
