@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"sync"
 )
@@ -41,6 +42,11 @@ func NewProcessor(rpc RPC, opts *Options) *Processor {
 	if cap > 256 { cap = 256 }
 
 	topics := ConvertToTopics(opts.Topics)
+
+	// Check if fetch mode exists, fallback to logs as default if not specified
+	if opts.FetchMode == "" {
+		opts.FetchMode = FetchModeLogs
+	}
 
 	return &Processor{
 		rpc: rpc,
@@ -132,29 +138,38 @@ outer:
 			go func(){
 				defer wg.Done()
 				for job := range jobs {
-					//log.Printf("getting job from block %d to block %d...\n", job.from, job.to)
-					filter := Filter{
-						FromBlock: Uint64ToHexQty(job.from),
-						ToBlock: Uint64ToHexQty(job.to),
-						Topics: p.topics,
-					}
-					logs, err := p.rpc.GetLogs(rpcCtx, filter)
-					if err != nil {
-						log.Println("Error fetching logs: ", err)
-						select {
-						case errCh <- err:
-							return
-						default:
-							return
+					var logs []Log
+					var err error
+
+					switch p.opts.FetchMode {
+					case FetchModeLogs:
+						filter := Filter{
+							FromBlock: Uint64ToHexQty(job.from),
+							ToBlock: Uint64ToHexQty(job.to),
+							Topics: p.topics,
 						}
+						logs, err = p.rpc.GetLogs(rpcCtx, filter)
+
+					case FetchModeReceipts:
+						logs, err = p.fetchLogsFromReceipts(rpcCtx, job.from, job.to)
 					}
-					//log.Printf("Here")
-					select {
-						case <-rpcCtx.Done():
-							return
-						case doneCh <- doneMsg{from: job.from, to: job.to, logs: logs}:
-							//log.Printf("sending log to arbiter from block %d to block %d...\n", job.from, job.to)
-					}	
+						if err != nil {
+							log.Println("Error fetching logs: ", err)
+							select {
+							case errCh <- err:
+								return
+							default:
+								return
+							}
+						}
+						//log.Printf("Here")
+						select {
+							case <-rpcCtx.Done():
+								return
+							case doneCh <- doneMsg{from: job.from, to: job.to, logs: logs}:
+								//log.Printf("sending log to arbiter from block %d to block %d...\n", job.from, job.to)
+						}
+			
 				}
 			}()
 		}
@@ -348,6 +363,54 @@ func (p *Processor) dropWindowHash(after uint64) {
 
 		p.windowOrder = p.windowOrder[:i+1]
 }
+
+// Helper function to get logs from receipts
+func(p *Processor) fetchLogsFromReceipts(ctx context.Context, from uint64, to uint64) ([]Log, error){
+	var allLogs []Log
+	for blockNum := from; blockNum <= to; blockNum ++ {
+		s_blockNum := Uint64ToHexQty(blockNum)
+		receipts, err := p.rpc.GetBlockReceipts(ctx, s_blockNum)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get receipts for block %d: %w", blockNum, err)
+		}
+
+		for _, receipt := range receipts {
+			for _, log := range receipt.Logs {
+				if p.matchesTopicFilter(log) {
+                    allLogs = append(allLogs, log)
+                }
+			}
+		}
+	}
+	return allLogs, nil
+}
+
+// Checks if a log matches the configurated topic
+func(p *Processor) matchesTopicFilter(log Log) bool {
+	// If there is no topic specified then its true by default
+	if len(p.opts.Topics) == 0 {
+		return true
+	}
+
+	// Check if log has enough topics
+    if len(log.Topics) == 0 {
+        return false
+    }
+
+	// Match first topic (event signature)
+    for _, filterTopic := range p.topics {
+        if len(log.Topics) > 0 {
+            if logTopic, ok := log.Topics[0].(string); ok {
+                if logTopic == filterTopic {
+                    return true
+                }
+            }
+        }
+    }
+    
+    return false
+}
+
 
 
 

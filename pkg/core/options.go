@@ -1,5 +1,12 @@
 package core
 
+type FetchMode string
+
+const (
+	FetchModeLogs FetchMode = "logs" // Use eth_getlogs for efficiency
+	FetchModeReceipts FetchMode = "receipts" // Use eth_getBlockReceipts for reliability
+)
+
 type Options struct {
 	// BatchSize controls how many decoded events are buffered and written to sinks at once.
 	BatchSize int
@@ -31,4 +38,8 @@ type Options struct {
 	ReorgLookbackBlocks uint64
 	// Topics is the event for indexer to listen and get the log
 	Topics []string
+	// FetchMode determines which RPC method to use for fetching logs
+    // - "logs": Uses eth_getLogs (default, more efficient)
+    // - "receipts": Uses eth_getBlockReceipts (more reliable, higher bandwidth)
+	FetchMode FetchMode
 }

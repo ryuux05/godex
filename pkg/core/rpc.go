@@ -12,4 +12,7 @@ type RPC interface {
 
 	// Fetch logs over a range with filter
 	GetLogs(ctx context.Context, filter Filter) ([]Log, error)
+
+	// Get block receipt for the current block number
+	GetBlockReceipts(ctx context.Context, blockNumber string) ([]Receipt, error)
 }

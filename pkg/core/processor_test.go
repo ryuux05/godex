@@ -72,6 +72,60 @@ func TestRunWithOneLog_Success(t *testing.T) {
 				},
 			})
 
+		case "eth_getBlockReceipts":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"jsonrpc": "2.0",
+				"id":      1,
+				"result": []map[string]any{
+					// Receipt 1: Transaction with Transfer event log
+					{
+						"BlockHash":         "0xbh1",
+						"BlockNumber":       "0x1",
+						"ContractAddress":   nil,
+						"CumulativeGasUsed": "0x5208",
+						"EffectiveGasPrice": "0x3b9aca00",
+						"From":              "0xsender",
+						"GasUsed":           "0x5208",
+						"Logs": []map[string]any{
+							{
+								"Address":          "0xabc",
+								"Topics":           []any{"0xddf252ad"},
+								"Data":             "0x",
+								"BlockNumber":      "0x1",
+								"TransactionHash":  "0xth1",
+								"TransactionIndex": "0x0",
+								"BlockHash":        "0xbh1",
+								"LogIndex":         "0x0",
+								"Removed":          false,
+							},
+						},
+						"LogsBloom":        "0x00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+						"Status":           "0x1",
+						"To":               "0xabc",
+						"TransactionHash":  "0xth1",
+						"TransactionIndex": "0x0",
+						"Type":             "0x2",
+					},
+					// Receipt 2: Transaction with no logs
+					{
+						"BlockHash":         "0xbh1",
+						"BlockNumber":       "0x1",
+						"ContractAddress":   nil,
+						"CumulativeGasUsed": "0xa410",
+						"EffectiveGasPrice": "0x3b9aca00",
+						"From":              "0xsender2",
+						"GasUsed":           "0x5208",
+						"Logs":              []map[string]any{},
+						"LogsBloom":         "0x00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+						"Status":            "0x1",
+						"To":                "0xreceiver",
+						"TransactionHash":   "0xth2",
+						"TransactionIndex":  "0x1",
+						"Type":              "0x2",
+					},
+				},
+			})
+
 		default:
 			http.Error(w, "method no supported", http.StatusBadRequest)
 		}
@@ -90,6 +144,7 @@ func TestRunWithOneLog_Success(t *testing.T) {
 		StartBlock:         0,
 		Confimation:        0,
 		LogsBufferSize:     1024,
+		FetchMode: FetchModeReceipts,
 	}
 	processor := NewProcessor(rpc, &opts)
 	go func() { _ = processor.Run(ctx)}()
