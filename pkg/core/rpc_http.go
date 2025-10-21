@@ -181,3 +181,46 @@ func(r *HTTPRPC) GetLogs(ctx context.Context, filter Filter) ([]Log, error) {
 
 	return resp.Result, nil
 }
+
+func(r *HTTPRPC) GetBlockReceipts(ctx context.Context, blockNumber string) ([]Receipt, error) {
+	body := map[string]interface{} {
+		"jsonrpc": "2.0",
+		"id": 1,
+		"method": "eth_getBlockReceipts",
+		"params": []interface{}{
+			blockNumber,
+		},		
+	}
+
+	b, err := json.Marshal(body)
+	if err != nil {
+		return []Receipt{}, fmt.Errorf("error marshaling body: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, "POST", r.endpoint, bytes.NewReader(b))
+	if err != nil {
+		return []Receipt{}, fmt.Errorf("error creating http request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	res, err := r.client.Do(req)
+	if err != nil {
+		return []Receipt{}, fmt.Errorf("error fetching rpc: %w", err)	
+	}
+	defer res.Body.Close()
+
+	if res.StatusCode != http.StatusOK {
+		return []Receipt{}, fmt.Errorf("http status: %d", res.StatusCode)	
+	} 
+
+	var resp rpcResponse[[]Receipt]
+
+	if err := json.NewDecoder(res.Body).Decode(&resp); err != nil {
+		return []Receipt{}, fmt.Errorf("error reading response body: %w", err)
+	}
+	if resp.Error != nil {
+		return []Receipt{}, fmt.Errorf("rpc error %d: %s", resp.Error.Code, resp.Error.Message)
+	}
+
+	return resp.Result, nil
+}

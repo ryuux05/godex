@@ -37,8 +37,36 @@ type Log struct {
 	Removed bool `json:"removed,omitempty"`
 }
 
-type Event struct {
-
+type Receipt struct {
+	// The hash of the block. null when pending
+	BlockHash string `json:"blockHash"`
+	// The block number
+	BlockNumber string `json:"blockNumber"`
+	// The contract address created if the transaction was a contract creation, otherwise null
+	// Since contract address is  nullable, turn it into pointer to represent it
+	ContractAddress *string `json:"contractAddress,omitempty"`
+	// The total amount of gas used when this transaction was executed in the block
+	CumulativeGasUsed string `json:"cumulativeGasUsed"`
+	// The actual value per gas deducted from the sender account
+	EffectiveGasPrice string `json:"effectiveGasPrice"`
+	// The address of the sender
+	From string `json:"from"`
+	// The amount of gas used by this specific transaction alone
+	GasUsed string `json:"gasUsed"`
+	// An array of log objects that generated this transaction
+	Logs []Log `json:"logs"`
+	// The bloom filter for light clients to quickly retrieve related logs
+	LogsBloom string `json:"logsBloom"`
+	// It is either 1 (success) or 0 (failure) encoded as a hexadecimal
+	Status string `json:"status"`
+	// The address of the receiver. null when it's a contract creation transaction
+	To string `json:"to"`
+	// The hash of the transaction
+	TransactionHash string `json:"transactionHash"`
+	// An index of the transaction in the block
+	TransactionIndex string `json:"transactionIndex"`
+	// The value type
+	Type string `json:"type"`
 }
 
 type Filter struct {
