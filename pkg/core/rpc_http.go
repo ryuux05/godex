@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"time"
+
 )
 
 type HTTPRPC struct{
@@ -18,18 +19,14 @@ type HTTPRPC struct{
 	client *http.Client
 }
 
-type rpcError struct  {
-	Code    int    `json:"code"`
-	Message string `json:"message"`
-	Data    any    `json:"data,omitempty"`
-}
+
 
 // Response type for rpc
 type rpcResponse[T any] struct {
 	JSONRPC string `json:"jsonrpc"`
 	ID uint `json:"id"`
 	Result T `json:"result"`
-	Error *rpcError `json:"error"`
+	Error *RPCError `json:"error"`
 }
 
 // NewHTTPRPC creates an HTTP JSON-RPC client.
@@ -65,12 +62,16 @@ func(r *HTTPRPC) Head(ctx context.Context) (string, error) {
 	res, err := r.client.Do(req)
 
 	if err != nil {
-		return "", fmt.Errorf("rrror fetching rpc: %w", err)
+		return "", fmt.Errorf("error fetching rpc: %w", err)
 	}
 	defer res.Body.Close()
 
 	if res.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("http status: %d", res.StatusCode)	
+		// HTTP error - transport layer failed
+		return "", &HTTPError{
+			StatusCode: res.StatusCode,
+			Message: res.Status,
+		}
 	}
 
 
@@ -82,7 +83,11 @@ func(r *HTTPRPC) Head(ctx context.Context) (string, error) {
 		return "", fmt.Errorf("error reading response body: %w", err)
 	}
 	if resp.Error != nil {
-		return "", fmt.Errorf("rpc error %d: %s", resp.Error.Code, resp.Error.Message)
+		// RPC error - RPC protocol error
+		return "", &RPCError{
+			Code: resp.Error.Code,
+			Message: resp.Error.Message,
+		}
 	}
 
 
@@ -121,7 +126,10 @@ func(r *HTTPRPC) GetBlock(ctx context.Context, blockNumber string) (Block, error
 	defer res.Body.Close()
 
 	if res.StatusCode != http.StatusOK {
-		return Block{}, fmt.Errorf("http status: %d", res.StatusCode)	
+		return Block{}, &HTTPError{
+			StatusCode: res.StatusCode,
+			Message: res.Status,
+		}
 	}
 
 
@@ -132,7 +140,10 @@ func(r *HTTPRPC) GetBlock(ctx context.Context, blockNumber string) (Block, error
 		return Block{}, fmt.Errorf("error reading response body: %w", err)
 	}
 	if resp.Error != nil {
-		return Block{}, fmt.Errorf("rpc error %d: %s", resp.Error.Code, resp.Error.Message)
+		return Block{}, &RPCError{
+			Code: resp.Error.Code,
+			Message: resp.Error.Message,
+		}
 	}
 
 	return resp.Result, nil
@@ -166,7 +177,10 @@ func(r *HTTPRPC) GetLogs(ctx context.Context, filter Filter) ([]Log, error) {
 	defer res.Body.Close()
 
 	if res.StatusCode != http.StatusOK {
-		return []Log{}, fmt.Errorf("http status: %d", res.StatusCode)	
+		return []Log{}, &HTTPError{
+			StatusCode: res.StatusCode,
+			Message: res.Status,
+		}
 	}
 
 
@@ -176,7 +190,10 @@ func(r *HTTPRPC) GetLogs(ctx context.Context, filter Filter) ([]Log, error) {
 		return []Log{}, fmt.Errorf("error reading response body: %w", err)
 	}
 	if resp.Error != nil {
-		return []Log{}, fmt.Errorf("rpc error %d: %s", resp.Error.Code, resp.Error.Message)
+		return []Log{}, &RPCError{
+			Code: resp.Error.Code,
+			Message: resp.Error.Message,
+		}
 	}
 
 	return resp.Result, nil
@@ -210,7 +227,10 @@ func(r *HTTPRPC) GetBlockReceipts(ctx context.Context, blockNumber string) ([]Re
 	defer res.Body.Close()
 
 	if res.StatusCode != http.StatusOK {
-		return []Receipt{}, fmt.Errorf("http status: %d", res.StatusCode)	
+		return []Receipt{},  &HTTPError{
+			StatusCode: res.StatusCode,
+			Message: res.Status,
+		}
 	} 
 
 	var resp rpcResponse[[]Receipt]
@@ -219,7 +239,10 @@ func(r *HTTPRPC) GetBlockReceipts(ctx context.Context, blockNumber string) ([]Re
 		return []Receipt{}, fmt.Errorf("error reading response body: %w", err)
 	}
 	if resp.Error != nil {
-		return []Receipt{}, fmt.Errorf("rpc error %d: %s", resp.Error.Code, resp.Error.Message)
+		return []Receipt{}, &RPCError{
+			Code: resp.Error.Code,
+			Message: resp.Error.Message,
+		}
 	}
 
 	return resp.Result, nil
