@@ -63,7 +63,7 @@ func RetryWithBackoff(ctx context.Context, config RetryConfig, fn func() error) 
 
 		// Check if the error is retriable
 		if !isRetryableError(lastErr) {
-			return fmt.Errorf("non-retriabe error: %w", lastErr)
+			return fmt.Errorf("non-retryable error: %w", lastErr)
 		}
 
 		// Last attempt failed - don't wait, just return
