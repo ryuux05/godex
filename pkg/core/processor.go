@@ -48,6 +48,13 @@ func NewProcessor(rpc RPC, opts *Options) *Processor {
 		opts.FetchMode = FetchModeLogs
 	}
 
+	// Check if retryconfig exists, use default if not specified
+	if opts.RetryConfig == nil {
+		defaultCfg := DefaultRetryConfig()
+    	opts.RetryConfig = &defaultCfg
+	}
+
+
 	return &Processor{
 		rpc: rpc,
 		opts: opts,
@@ -66,7 +73,12 @@ outer:
 		rpcCtx, rpcCancel := context.WithCancel(ctx)
 
 		// compute for new head
-		headHex, err := p.rpc.Head(rpcCtx)
+		var headHex string
+		err := RetryWithBackoff(rpcCtx, *p.opts.RetryConfig, func() error {
+			var err error
+			headHex, err = p.rpc.Head(rpcCtx)
+			return err
+		})
 		if err != nil {
 			rpcCancel()
 			return err
@@ -140,19 +152,22 @@ outer:
 				for job := range jobs {
 					var logs []Log
 					var err error
+					err = RetryWithBackoff(rpcCtx, *p.opts.RetryConfig, func() error {	
+						switch p.opts.FetchMode {
+						case FetchModeLogs:
+							filter := Filter{
+								FromBlock: Uint64ToHexQty(job.from),
+								ToBlock: Uint64ToHexQty(job.to),
+								Topics: p.topics,
+							}
+							logs, err = p.rpc.GetLogs(rpcCtx, filter)
 
-					switch p.opts.FetchMode {
-					case FetchModeLogs:
-						filter := Filter{
-							FromBlock: Uint64ToHexQty(job.from),
-							ToBlock: Uint64ToHexQty(job.to),
-							Topics: p.topics,
+						case FetchModeReceipts:
+							logs, err = p.fetchLogsFromReceipts(rpcCtx, job.from, job.to)
 						}
-						logs, err = p.rpc.GetLogs(rpcCtx, filter)
 
-					case FetchModeReceipts:
-						logs, err = p.fetchLogsFromReceipts(rpcCtx, job.from, job.to)
-					}
+						return err
+					})
 						if err != nil {
 							log.Println("Error fetching logs: ", err)
 							select {
@@ -203,7 +218,13 @@ outer:
 					for end, ok2 := window[next]; ok2; end, ok2 = window[next] {
 						
 						// Get start window blockhash and compare it with the stored blockhash
-						block, err := p.rpc.GetBlock(rpcCtx, Uint64ToHexQty(next))
+						var block Block
+						err := RetryWithBackoff(ctx, *p.opts.RetryConfig, func() error {
+							var err error
+							block, err = p.rpc.GetBlock(rpcCtx, Uint64ToHexQty(next))
+							return err
+						})
+
 						if err != nil {
 							if rpcCtx.Err() != nil { 
 								return 
@@ -251,7 +272,11 @@ outer:
 						}
 						
 						// Get the end block blockhash after committing
-						block, err = p.rpc.GetBlock(rpcCtx, Uint64ToHexQty(end))
+						err = RetryWithBackoff(ctx, *p.opts.RetryConfig, func() error {
+							var err error
+							block, err = p.rpc.GetBlock(rpcCtx, Uint64ToHexQty(end))
+							return err
+						})
 						if err != nil {
 							if rpcCtx.Err() != nil { return }        // batch was canceled; ignore
 							log.Println("Error getting window end block: ", err)

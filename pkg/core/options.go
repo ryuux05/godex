@@ -42,7 +42,8 @@ type Options struct {
     // - "logs": Uses eth_getLogs (default, more efficient)
     // - "receipts": Uses eth_getBlockReceipts (more reliable, higher bandwidth)
 	FetchMode FetchMode
-	// RetryConfig manage how to handle retry on retriable errors
+	// RetryConfig manage how to handle retry on retriable errors.
+	// Use pointer since it nillable
 	// There is default settings
-	RetryConfig RetryConfig
+	RetryConfig *RetryConfig
 }
