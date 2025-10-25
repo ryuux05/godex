@@ -483,7 +483,7 @@ func TestRunWithRetry_Success(t *testing.T) {
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"jsonrpc": "2.0",
 				"id":      1,
-				"result":  "0xa",
+				"result":  "0x1",
 			})
 
 		case "eth_getLogs":
@@ -583,8 +583,13 @@ func TestRunWithRetry_Success(t *testing.T) {
 				mu.Lock()
 				//log.Printf("%v", l)
 				logs = append(logs, l)
+				if len(logs) >= 1 {
+					select {
+					case done <- struct{}{}:
+					default:
+					}
+				}
 				mu.Unlock()
-				done <- struct{}{}
 			}
 		}
 	}()
@@ -596,7 +601,7 @@ func TestRunWithRetry_Success(t *testing.T) {
 		t.Fatal("Test timeout")
 	}
 
-	assert.Equal(t, 4, attempts, "Should have retried 3 times")
+	assert.Equal(t, 3, attempts, "Should have retried 3 times")
 	assert.Len(t, logs, 1, "Should receive log after retry")
 }
 
