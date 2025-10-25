@@ -600,4 +600,3 @@ func TestRunWithRetry_Success(t *testing.T) {
 	assert.Len(t, logs, 1, "Should receive log after retry")
 }
 
-func TestRunWithRetry_
