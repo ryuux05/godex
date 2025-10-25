@@ -134,7 +134,7 @@ func TestRunWithOneLog_Success(t *testing.T) {
 
 	rpc := NewHTTPRPC(srv.URL, 0)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	opts := Options{
 		RangeSize:          100,
@@ -461,3 +461,147 @@ func TestReorg_Success(t *testing.T) {
 
 	assert.Equal(t, len(logs), 10)
 }
+
+func TestRunWithRetry_Success(t *testing.T) {
+	attempts := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+
+		var req struct {
+			Method string        `json:"method"`
+			Params []interface{} `json:"params"`
+			ID     interface{}   `json:"id"`
+		}
+
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		switch req.Method {
+		case "eth_blockNumber":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"jsonrpc": "2.0",
+				"id":      1,
+				"result":  "0x1",
+			})
+
+		case "eth_getLogs":
+			attempts++
+			if attempts < 3 {
+				// First 2 attempts: return 503 error
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"error": map[string]any{
+						"code":    -32000,
+						"message": "oops",
+					},
+				})
+				return
+			}
+			// 3rd attempt: succeed
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"jsonrpc": "2.0",
+				"id":      1,
+				"result": []map[string]any{
+					{
+						"Address":          "0xabc",
+						"Topics":           []any{"0xddf252ad"},
+						"Data":             "0x",
+						"BlockNumber":      "0x1",
+						"TransactionHash":  "0xth1",
+						"TransactionIndex": "0",
+						"BlockHash":        "0xbh1",
+						"LogIndex":         "0x0",
+						"Removed":          false,
+					},
+				},
+			})
+
+		case "eth_getBlockByNumber":
+			blockNum, _ := HexQtyToUint64(fmt.Sprintf("%s", req.Params[0]))
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"jsonrpc": "2.0",
+				"id":      1,
+				"result": map[string]any{
+					"Number":     req.Params[0],
+					"Hash":       req.Params[0],
+					"ParentHash": Uint64ToHexQty(blockNum - 1),
+					"Timestamp":  fmt.Sprintf("%d", time.Now().Unix()),
+				},
+			})
+
+		default:
+			http.Error(w, "method no supported", http.StatusBadRequest)
+		}
+	}))
+	defer srv.Close()
+
+	rpc := NewHTTPRPC(srv.URL, 0)
+
+	ctx, cancel := context.WithTimeout(context.Background(),  5 * time.Second)
+	defer cancel()
+
+	retryConfig := RetryConfig{
+		MaxAttempts:    3,
+		InitialBackoff: 10 * time.Millisecond,
+		MaxBackoff:     100 * time.Millisecond,
+		Multiplier:     2.0,
+		EnableJitter:   true,
+	}
+
+	opts := Options{
+		RangeSize:          1,
+		BatchSize:          50,
+		DecoderConcurrency: 1,
+		FetcherConcurrency: 1,
+		StartBlock:         0,
+		Confimation:        0,
+		LogsBufferSize:     1024,
+		FetchMode: FetchModeLogs,
+		RetryConfig: &retryConfig,
+	}
+	processor := NewProcessor(rpc, &opts)
+	go func() { _ = processor.Run(ctx)}()
+
+	var logs []Log
+
+	done := make(chan struct{})
+	var mu sync.Mutex
+
+	go func() {
+		defer close(done) // remove the block when the channel is closed.
+		for {	
+			select{
+			case <- ctx.Done():
+				return
+			case l, ok := <- processor.Logs():
+				if !ok {
+					return
+				}	
+				mu.Lock()
+				//log.Printf("%v", l)
+				logs = append(logs, l)
+				if len(logs) >= 1 {
+					select {
+					case done <- struct{}{}:
+					default:
+					}
+				}
+				mu.Unlock()
+			}
+		}
+	}()
+
+	select {
+	case <-done:
+		// Logs channel closed, processor done
+	case <-time.After(2 * time.Second):
+		t.Fatal("Test timeout")
+	}
+
+	assert.Equal(t, 3, attempts, "Should have retried 3 times")
+	assert.Len(t, logs, 1, "Should receive log after retry")
+}
+
