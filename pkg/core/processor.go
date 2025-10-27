@@ -52,7 +52,11 @@ func NewProcessor() *Processor {
 }
 
 
-func (p *Processor) AddChain(chain ChainInfo, opts *Options) {
+func (p *Processor) AddChain(chain ChainInfo, opts *Options) error {
+	if p.isRunning {
+        return fmt.Errorf("cannot add chain while processor is running")
+    }
+
 	cursor := opts.StartBlock; if cursor == 0 { cursor = 0 }
 
 	// Clamp the max storedwindowhash bound.
@@ -86,6 +90,9 @@ func (p *Processor) AddChain(chain ChainInfo, opts *Options) {
 	}
 
 	p.chains[chain.ChainId] = chainState
+	p.logsCh[chain.ChainId] = make(chan Log, opts.LogsBufferSize)
+
+	return nil
 }
 
 func (p *Processor) GetChain(chainId string) ChainInfo {
@@ -93,6 +100,9 @@ func (p *Processor) GetChain(chainId string) ChainInfo {
 }
 
 func (p *Processor) Run(ctx context.Context) error{
+	p.isRunning = true
+    defer func() { p.isRunning = false }()
+
 	g := errgroup.Group{}
 	for chainId, chain := range p.chains {
 		id := chainId
@@ -114,8 +124,12 @@ func (p *Processor) Run(ctx context.Context) error{
 }
 
 // return the read-only channel
-func (p *Processor) Logs(chainId string) <-chan Log {
-	return p.logsCh[chainId]
+func (p *Processor) Logs(chainId string) (<-chan Log, error) {
+	ch, exists := p.logsCh[chainId]
+    if !exists {
+        return nil, fmt.Errorf("chain %s not found", chainId)
+    }
+    return ch, nil
 }
 
 func (p *Processor) runChain(ctx context.Context, logsCh chan Log, chain *chainState) error {
