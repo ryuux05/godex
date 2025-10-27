@@ -146,14 +146,25 @@ func TestRunWithOneLog_Success(t *testing.T) {
 		LogsBufferSize:     1024,
 		FetchMode: FetchModeReceipts,
 	}
-	processor := NewProcessor(rpc, &opts)
+	chain := ChainInfo{
+		ChainId: "592",
+		Name: "Astar",
+		RPC: rpc,
+	}
+
+	processor := NewProcessor()
+	processor.AddChain(chain, &opts)
 	go func() { _ = processor.Run(ctx)}()
 
 
 	var logs []Log
+	logsCh, err := processor.Logs(chain.ChainId)
+	if err != nil {
+		log.Fatal(err)
+	}
 	for {
 		select {
-		case log, ok := <-processor.Logs():
+		case log, ok := <-logsCh:
 			if !ok {
 				goto done // Channel closed
 			}
@@ -293,7 +304,14 @@ func TestRunWithMultipleLog_Success(t *testing.T) {
 		Confimation:        0,
 		LogsBufferSize:     1024,
 	}
-	processor := NewProcessor(rpc, &opts)
+	chain := ChainInfo{
+		ChainId: "592",
+		Name: "Astar",
+		RPC: rpc,
+	}
+
+	processor := NewProcessor()
+	processor.AddChain(chain, &opts)
 	go func() { _ = processor.Run(ctx)}()
 
 
@@ -306,11 +324,15 @@ func TestRunWithMultipleLog_Success(t *testing.T) {
 
 	go func() {
 		defer close(done) // remove the block when the channel is closed.
+		logsCh, err := processor.Logs(chain.ChainId)
+	if err != nil {
+		log.Fatal(err)
+	}
 		for {	
 			select{
 			case <- ctx.Done():
 				return
-			case l, ok := <- processor.Logs():
+			case l, ok := <- logsCh:
 				if !ok {
 					return
 				}	
@@ -427,7 +449,14 @@ func TestReorg_Success(t *testing.T) {
 		Confimation:        0,
 		LogsBufferSize:     1024,
 	}
-	processor := NewProcessor(rpc, &opts)
+	chain := ChainInfo{
+		ChainId: "592",
+		Name: "Astar",
+		RPC: rpc,
+	}
+
+	processor := NewProcessor()
+	processor.AddChain(chain, &opts)
 	go func() { _ = processor.Run(ctx)}()
 
 
@@ -440,11 +469,15 @@ func TestReorg_Success(t *testing.T) {
 
 	go func() {
 		defer close(done) // remove the block when the channel is closed.
+		logsCh, err := processor.Logs(chain.ChainId)
+	if err != nil {
+		log.Fatal(err)
+	}
 		for {	
 			select{
 			case <- ctx.Done():
 				return
-			case l, ok := <- processor.Logs():
+			case l, ok := <- logsCh:
 				if !ok {
 					return
 				}	
@@ -562,7 +595,14 @@ func TestRunWithRetry_Success(t *testing.T) {
 		FetchMode: FetchModeLogs,
 		RetryConfig: &retryConfig,
 	}
-	processor := NewProcessor(rpc, &opts)
+	chain := ChainInfo{
+		ChainId: "592",
+		Name: "Astar",
+		RPC: rpc,
+	}
+
+	processor := NewProcessor()
+	processor.AddChain(chain, &opts)
 	go func() { _ = processor.Run(ctx)}()
 
 	var logs []Log
@@ -572,11 +612,15 @@ func TestRunWithRetry_Success(t *testing.T) {
 
 	go func() {
 		defer close(done) // remove the block when the channel is closed.
+		logsCh, err := processor.Logs(chain.ChainId)
+	if err != nil {
+		log.Fatal(err)
+	}
 		for {	
 			select{
 			case <- ctx.Done():
 				return
-			case l, ok := <- processor.Logs():
+			case l, ok := <- logsCh:
 				if !ok {
 					return
 				}	
