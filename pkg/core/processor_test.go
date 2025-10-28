@@ -649,3 +649,476 @@ func TestRunWithRetry_Success(t *testing.T) {
 	assert.Len(t, logs, 1, "Should receive log after retry")
 }
 
+func TestMultiChainRun_Success(t *testing.T) {
+    // Track calls per chain
+    ethCalls := 0
+    var mu sync.Mutex
+    
+    srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+        w.Header().Set("Content-Type", "application/json")
+        
+        var req struct {
+            Method string        `json:"method"`
+            Params []interface{} `json:"params"`
+        }
+        json.NewDecoder(r.Body).Decode(&req)
+        
+        // Check which chain by port or add chain identifier
+        switch req.Method {
+        case "eth_blockNumber":
+            _ = json.NewEncoder(w).Encode(map[string]any{
+                "jsonrpc": "2.0",
+                "id":      1,
+                "result":  "0x5", // Block 5
+            })
+            
+        case "eth_getLogs":
+            mu.Lock()
+            ethCalls++ // Count calls
+            mu.Unlock()
+            
+            _ = json.NewEncoder(w).Encode(map[string]any{
+                "jsonrpc": "2.0",
+                "id":      1,
+                "result": []map[string]any{
+                    {
+                        "Address":          "0xeth",
+                        "Topics":           []any{"0xddf252ad"},
+                        "Data":             "0x",
+                        "BlockNumber":      "0x1",
+                        "TransactionHash":  "0xeth_tx",
+                        "TransactionIndex": "0x0",
+                        "BlockHash":        "0xeth_block",
+                        "LogIndex":         "0x0",
+                        "Removed":          false,
+                    },
+                },
+            })
+            
+        case "eth_getBlockByNumber":
+            blockNum, _ := HexQtyToUint64(fmt.Sprintf("%s", req.Params[0]))
+            _ = json.NewEncoder(w).Encode(map[string]any{
+                "jsonrpc": "2.0",
+                "id":      1,
+                "result": map[string]any{
+                    "Number":     req.Params[0],
+                    "Hash":       req.Params[0],
+                    "ParentHash": Uint64ToHexQty(blockNum - 1),
+                    "Timestamp":  fmt.Sprintf("%d", time.Now().Unix()),
+                },
+            })
+        }
+    }))
+    defer srv.Close()
+    
+    // Create two separate RPC clients (simulating different chains)
+    ethRPC := NewHTTPRPC(srv.URL, 0)
+    polyRPC := NewHTTPRPC(srv.URL, 0)
+    
+    processor := NewProcessor()
+    
+    // Add Ethereum chain
+    ethOpts := &Options{
+        RangeSize:          2,
+        FetcherConcurrency: 1,
+        StartBlock:         0,
+        Confimation:        0,
+        LogsBufferSize:     10,
+        FetchMode:          FetchModeLogs,
+        Topics:             []string{"Transfer(address,address,uint256)"},
+    }
+    processor.AddChain(ChainInfo{
+        ChainId: "1",
+        Name:    "Ethereum",
+        RPC:     ethRPC,
+    }, ethOpts)
+    
+    // Add Polygon chain
+    polyOpts := &Options{
+        RangeSize:          2,
+        FetcherConcurrency: 1,
+        StartBlock:         0,
+        Confimation:        0,
+        LogsBufferSize:     10,
+        FetchMode:          FetchModeLogs,
+        Topics:             []string{"Transfer(address,address,uint256)"},
+    }
+    processor.AddChain(ChainInfo{
+        ChainId: "137",
+        Name:    "Polygon",
+        RPC:     polyRPC,
+    }, polyOpts)
+    
+    ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+    defer cancel()
+    
+    go processor.Run(ctx)
+    
+    // Collect logs from both chains
+    ethLogs := []Log{}
+    polyLogs := []Log{}
+    
+    ethCh, err := processor.Logs("1")
+    assert.NoError(t, err)
+    
+    polyCh, err := processor.Logs("137")
+    assert.NoError(t, err)
+    
+    done := make(chan struct{})
+    go func() {
+        defer close(done)
+        timeout := time.After(1 * time.Second)
+        for {
+            select {
+            case log, ok := <-ethCh:
+                if !ok {
+                    return
+                }
+                ethLogs = append(ethLogs, log)
+            case log, ok := <-polyCh:
+                if !ok {
+                    return
+                }
+                polyLogs = append(polyLogs, log)
+            case <-timeout:
+                return
+            case <-ctx.Done():
+                return
+            }
+        }
+    }()
+    
+    // Wait
+    select {
+    case <-done:
+    case <-time.After(2 * time.Second):
+    }
+    
+    cancel()
+    time.Sleep(100 * time.Millisecond)
+    
+    // Verify both chains processed
+    assert.GreaterOrEqual(t, len(ethLogs), 1, "Ethereum should have logs")
+    assert.GreaterOrEqual(t, len(polyLogs), 1, "Polygon should have logs")
+}
+
+func TestMultiChain_IndependentErrors(t *testing.T) {
+    // Ethereum server - always fails
+    ethCallCount := 0
+    ethSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+        w.Header().Set("Content-Type", "application/json")
+        ethCallCount++
+        
+        // Always return error for Ethereum
+        _ = json.NewEncoder(w).Encode(map[string]any{
+            "jsonrpc": "2.0",
+            "id":      1,
+            "error": map[string]any{
+                "code":    -32000,
+                "message": "ethereum node is down",
+            },
+        })
+    }))
+    defer ethSrv.Close()
+    
+    // Polygon server - works fine
+    polyCallCount := 0
+    polySrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+        w.Header().Set("Content-Type", "application/json")
+        polyCallCount++
+        
+        var req struct {
+            Method string        `json:"method"`
+            Params []interface{} `json:"params"`
+        }
+        json.NewDecoder(r.Body).Decode(&req)
+        
+        switch req.Method {
+        case "eth_blockNumber":
+            _ = json.NewEncoder(w).Encode(map[string]any{
+                "jsonrpc": "2.0",
+                "id":      1,
+                "result":  "0x2", // Block 2
+            })
+            
+        case "eth_getLogs":
+            _ = json.NewEncoder(w).Encode(map[string]any{
+                "jsonrpc": "2.0",
+                "id":      1,
+                "result": []map[string]any{
+                    {
+                        "Address":          "0xpoly",
+                        "Topics":           []any{"0xddf252ad"},
+                        "Data":             "0x",
+                        "BlockNumber":      "0x1",
+                        "TransactionHash":  "0xpoly_tx",
+                        "TransactionIndex": "0x0",
+                        "BlockHash":        "0xpoly_bh",
+                        "LogIndex":         "0x0",
+                        "Removed":          false,
+                    },
+                },
+            })
+            
+        case "eth_getBlockByNumber":
+            blockNum, _ := HexQtyToUint64(fmt.Sprintf("%s", req.Params[0]))
+            _ = json.NewEncoder(w).Encode(map[string]any{
+                "jsonrpc": "2.0",
+                "id":      1,
+                "result": map[string]any{
+                    "Number":     req.Params[0],
+                    "Hash":       req.Params[0],
+                    "ParentHash": Uint64ToHexQty(blockNum - 1),
+                    "Timestamp":  fmt.Sprintf("%d", time.Now().Unix()),
+                },
+            })
+            
+        default:
+            http.Error(w, "method not supported", http.StatusBadRequest)
+        }
+    }))
+    defer polySrv.Close()
+    
+    processor := NewProcessor()
+    
+    // Fast retry config so Ethereum fails quickly
+    fastRetry := &RetryConfig{
+        MaxAttempts:    2,
+        InitialBackoff: 10 * time.Millisecond,
+        MaxBackoff:     20 * time.Millisecond,
+        Multiplier:     1.5,
+        EnableJitter:   false,
+    }
+    
+    ethOpts := &Options{
+        RangeSize:          1,
+        FetcherConcurrency: 1,
+        StartBlock:         0,
+        Confimation:        0,
+        LogsBufferSize:     10,
+        FetchMode:          FetchModeLogs,
+        Topics:             []string{"0xddf252ad"},
+        RetryConfig:        fastRetry,
+    }
+    
+    polyOpts := &Options{
+        RangeSize:          1,
+        FetcherConcurrency: 1,
+        StartBlock:         0,
+        Confimation:        0,
+        LogsBufferSize:     10,
+        FetchMode:          FetchModeLogs,
+        Topics:             []string{"0xddf252ad"},
+        RetryConfig:        fastRetry,
+    }
+    
+    // Add both chains
+    err := processor.AddChain(ChainInfo{
+        ChainId: "1",
+        Name:    "Ethereum",
+        RPC:     NewHTTPRPC(ethSrv.URL, 0),
+    }, ethOpts)
+    assert.NoError(t, err)
+    
+    err = processor.AddChain(ChainInfo{
+        ChainId: "137",
+        Name:    "Polygon",
+        RPC:     NewHTTPRPC(polySrv.URL, 0),
+    }, polyOpts)
+    assert.NoError(t, err)
+    
+    ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+    defer cancel()
+    
+    // Collect Polygon logs
+    polyCh, err := processor.Logs("137")
+    assert.NoError(t, err)
+    
+    polyLogs := []Log{}
+    var logsMu sync.Mutex
+    
+    go func() {
+        for log := range polyCh {
+            logsMu.Lock()
+            polyLogs = append(polyLogs, log)
+            logsMu.Unlock()
+        }
+    }()
+    
+    // Run processor
+    runErr := processor.Run(ctx)
+    
+    // Wait a bit for log collection
+    time.Sleep(100 * time.Millisecond)
+    
+    // Assertions
+    t.Logf("Run error: %v", runErr)
+    t.Logf("Ethereum calls: %d", ethCallCount)
+    t.Logf("Polygon calls: %d", polyCallCount)
+    
+    logsMu.Lock()
+    polyLogCount := len(polyLogs)
+    logsMu.Unlock()
+    t.Logf("Polygon logs collected: %d", polyLogCount)
+    
+    assert.Greater(t, ethCallCount, 0, "Ethereum should have attempted calls")
+    assert.Greater(t, polyCallCount, 0, "Polygon should have made calls")
+    assert.Error(t, runErr, "Should get error from Ethereum chain")
+}
+
+func TestMultiChain_BothChainsSucceed(t *testing.T) {
+    // Both servers work fine
+    createWorkingServer := func(chainName string) *httptest.Server {
+        return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+            w.Header().Set("Content-Type", "application/json")
+            
+            var req struct {
+                Method string        `json:"method"`
+                Params []interface{} `json:"params"`
+            }
+            json.NewDecoder(r.Body).Decode(&req)
+            
+            switch req.Method {
+            case "eth_blockNumber":
+                _ = json.NewEncoder(w).Encode(map[string]any{
+                    "jsonrpc": "2.0",
+                    "id":      1,
+                    "result":  "0x2",
+                })
+                
+            case "eth_getLogs":
+                _ = json.NewEncoder(w).Encode(map[string]any{
+                    "jsonrpc": "2.0",
+                    "id":      1,
+                    "result": []map[string]any{
+                        {
+                            "Address":          fmt.Sprintf("0x%s", chainName),
+                            "Topics":           []any{"0xddf252ad"},
+                            "Data":             "0x",
+                            "BlockNumber":      "0x1",
+                            "TransactionHash":  fmt.Sprintf("0x%s_tx", chainName),
+                            "TransactionIndex": "0x0",
+                            "BlockHash":        fmt.Sprintf("0x%s_bh", chainName),
+                            "LogIndex":         "0x0",
+                            "Removed":          false,
+                        },
+                    },
+                })
+                
+            case "eth_getBlockByNumber":
+                blockNum, _ := HexQtyToUint64(fmt.Sprintf("%s", req.Params[0]))
+                _ = json.NewEncoder(w).Encode(map[string]any{
+                    "jsonrpc": "2.0",
+                    "id":      1,
+                    "result": map[string]any{
+                        "Number":     req.Params[0],
+                        "Hash":       req.Params[0],
+                        "ParentHash": Uint64ToHexQty(blockNum - 1),
+                        "Timestamp":  fmt.Sprintf("%d", time.Now().Unix()),
+                    },
+                })
+            }
+        }))
+    }
+    
+    ethSrv := createWorkingServer("eth")
+    defer ethSrv.Close()
+    
+    polySrv := createWorkingServer("poly")
+    defer polySrv.Close()
+    
+    processor := NewProcessor()
+    
+    opts := &Options{
+        RangeSize:          1,
+        FetcherConcurrency: 1,
+        StartBlock:         0,
+        Confimation:        0,
+        LogsBufferSize:     10,
+        FetchMode:          FetchModeLogs,
+        Topics:             []string{"0xddf252ad"},
+        RetryConfig: &RetryConfig{
+            MaxAttempts:    3,
+            InitialBackoff: 10 * time.Millisecond,
+            MaxBackoff:     50 * time.Millisecond,
+        },
+    }
+    
+    processor.AddChain(ChainInfo{ChainId: "1", Name: "Eth", RPC: NewHTTPRPC(ethSrv.URL, 0)}, opts)
+    processor.AddChain(ChainInfo{ChainId: "137", Name: "Poly", RPC: NewHTTPRPC(polySrv.URL, 0)}, opts)
+    
+    ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+    defer cancel()
+    
+    // Collect logs from both chains
+    ethCh, _ := processor.Logs("1")
+    polyCh, _ := processor.Logs("137")
+    
+    ethLogs := []Log{}
+    polyLogs := []Log{}
+    var mu sync.Mutex
+    
+    go func() {
+        for log := range ethCh {
+            mu.Lock()
+            ethLogs = append(ethLogs, log)
+            mu.Unlock()
+        }
+    }()
+    
+    go func() {
+        for log := range polyCh {
+            mu.Lock()
+            polyLogs = append(polyLogs, log)
+            mu.Unlock()
+        }
+    }()
+    
+    go processor.Run(ctx)
+    
+    // Wait for processing
+    time.Sleep(500 * time.Millisecond)
+    cancel()
+    time.Sleep(100 * time.Millisecond)
+    
+    // Both chains should have logs
+    mu.Lock()
+    assert.GreaterOrEqual(t, len(ethLogs), 1, "Ethereum should have logs")
+    assert.GreaterOrEqual(t, len(polyLogs), 1, "Polygon should have logs")
+    
+    // Verify logs are from correct chains
+    if len(ethLogs) > 0 {
+        assert.Contains(t, ethLogs[0].Address, "eth")
+    }
+    if len(polyLogs) > 0 {
+        assert.Contains(t, polyLogs[0].Address, "poly")
+    }
+    mu.Unlock()
+}
+func TestMultiChain_AddChainWhileRunning(t *testing.T) {
+    processor := NewProcessor()
+    
+    opts := &Options{
+        RangeSize:  2,
+        StartBlock: 0,
+    }
+    
+    srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+        time.Sleep(2 * time.Second) // Make it run a while
+    }))
+    defer srv.Close()
+    
+    processor.AddChain(ChainInfo{ChainId: "1", RPC: NewHTTPRPC(srv.URL, 0)}, opts)
+    
+    ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+    defer cancel()
+    
+    go processor.Run(ctx)
+    time.Sleep(100 * time.Millisecond) // Let it start
+    
+    // Try to add chain while running
+    err := processor.AddChain(ChainInfo{ChainId: "137", RPC: NewHTTPRPC(srv.URL, 0)}, opts)
+    assert.Error(t, err)
+    assert.Contains(t, err.Error(), "running")
+}
+

@@ -41,6 +41,8 @@ type Processor struct {
 	// isRunning track the processor state if it's running or stopped.
 	// False by default until the processor run.
 	isRunning bool
+	// Mutex to access data safely
+	mu sync.RWMutex
 }
 
 func NewProcessor() *Processor {
@@ -53,6 +55,9 @@ func NewProcessor() *Processor {
 
 
 func (p *Processor) AddChain(chain ChainInfo, opts *Options) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	
 	if p.isRunning {
         return fmt.Errorf("cannot add chain while processor is running")
     }
@@ -125,6 +130,9 @@ func (p *Processor) Run(ctx context.Context) error{
 
 // return the read-only channel
 func (p *Processor) Logs(chainId string) (<-chan Log, error) {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	
 	ch, exists := p.logsCh[chainId]
     if !exists {
         return nil, fmt.Errorf("chain %s not found", chainId)
