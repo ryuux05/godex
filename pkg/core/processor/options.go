@@ -31,7 +31,11 @@ type Options struct {
 	// Confirmation is used to avoid most reorgs.
 	// Eth PoS confirmation is around 5-15 for "safe"
 	Confimation uint64
-	//How many Log items can be buffered in the processor’s logs channel.
+	// EnableTimestamps allow you to get timestamps for each event.
+	// Note that enabling this would cost additional call to the RPC.
+	// Default: false
+	EnableTimestamps bool
+	// How many Log items can be buffered in the processor’s logs channel.
 	// 0 makes it unbuffered.
 	// use a sane default (e.g., 1024).
 	LogsBufferSize uint64

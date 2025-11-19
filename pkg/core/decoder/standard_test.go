@@ -146,10 +146,11 @@ func TestDecodeTransfer_Successful(t *testing.T) {
 		LogIndex:         "0x5",
 	}
 
-	event, err := decoder.Decode("erc20", log)
+	event, err := decoder.Decode("erc20", "1", log)
 
 	assert.NoError(t, err)
 	assert.NotNil(t, event)
+	assert.Equal(t, "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef:0xabcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890:5", event.Id)
 	assert.Equal(t, uint64(18000000), event.BlockNumber)
 	assert.Equal(t, "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48", event.Address)
 	assert.Equal(t, "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef", event.BlockHash)
@@ -181,7 +182,7 @@ func TestDecodeERC721Transfer_Successful(t *testing.T) {
 		LogIndex:        "0x0",
 	}
 
-	event, err := decoder.Decode("erc721", log)
+	event, err := decoder.Decode("erc721", "1", log)
 
 	assert.NoError(t, err)
 	assert.NotNil(t, event)
@@ -198,7 +199,7 @@ func TestDecode_ABINotFound(t *testing.T) {
 		Topics: []string{"0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"},
 	}
 
-	event, err := decoder.Decode("nonexistent", log)
+	event, err := decoder.Decode("nonexistent", "1", log)
 
 	assert.Error(t, err)
 	assert.Nil(t, event)
@@ -214,7 +215,7 @@ func TestDecode_LogWithNoTopics(t *testing.T) {
 		Data:   "0x",
 	}
 
-	event, err := decoder.Decode("erc20", log)
+	event, err := decoder.Decode("erc20", "1", log)
 
 	assert.NoError(t, err)
 	assert.Nil(t, event) // Should return nil, nil for empty topics
@@ -231,7 +232,7 @@ func TestDecode_EventNotInABI(t *testing.T) {
 		},
 	}
 
-	event, err := decoder.Decode("erc20", log)
+	event, err := decoder.Decode("erc20", "1", log)
 
 	assert.NoError(t, err)
 	assert.Nil(t, event) // Event not in this ABI
@@ -252,7 +253,7 @@ func TestDecode_StructureMismatch(t *testing.T) {
 		Data: "0x",
 	}
 
-	event, err := decoder.Decode("erc20", log)
+	event, err := decoder.Decode("erc20", "1", log)
 
 	assert.NoError(t, err)
 	assert.Nil(t, event) // Structure doesn't match
@@ -273,7 +274,7 @@ func TestDecode_BoolEvent(t *testing.T) {
 
 	// Note: You'll need the correct topic hash for BoolEvent
 	// This is a template - adjust topic hash accordingly
-	event, err := decoder.Decode("bool", log)
+	event, err := decoder.Decode("bool", "1", log)
 
 	if err == nil && event != nil {
 		assert.Equal(t, "BoolEvent", event.EventType)
@@ -299,7 +300,7 @@ func TestDecode_StringEvent(t *testing.T) {
 	}
 
 	// Note: Adjust topic hash accordingly
-	event, err := decoder.Decode("string", log)
+	event, err := decoder.Decode("string", "1", log)
 
 	if err == nil && event != nil {
 		assert.Equal(t, "StringEvent", event.EventType)
@@ -347,7 +348,7 @@ func TestRegisterABI_MultipleABIs(t *testing.T) {
 		LogIndex:    "0x0",
 	}
 
-	event1, err := decoder.Decode("erc20", log1)
+	event1, err := decoder.Decode("erc20", "1", log1)
 	assert.NoError(t, err)
 	assert.NotNil(t, event1)
 	assert.Equal(t, "Transfer", event1.EventType)
@@ -365,7 +366,7 @@ func TestRegisterABI_MultipleABIs(t *testing.T) {
 		LogIndex:    "0x0",
 	}
 
-	event2, err := decoder.Decode("erc721", log2)
+	event2, err := decoder.Decode("erc721", "1", log2)
 	assert.NoError(t, err)
 	assert.NotNil(t, event2)
 	assert.Equal(t, "Transfer", event2.EventType)
@@ -386,7 +387,7 @@ func TestDecode_DataTooShort(t *testing.T) {
 		LogIndex:    "0x0",
 	}
 
-	event, err := decoder.Decode("erc20", log)
+	event, err := decoder.Decode("erc20", "1", log)
 
 	assert.NoError(t, err)
 	assert.Nil(t, event)
@@ -408,7 +409,7 @@ func TestDecode_MissingIndexedParameter(t *testing.T) {
 		LogIndex:    "0x0",
 	}
 
-	event, err := decoder.Decode("erc20", log)
+	event, err := decoder.Decode("erc20", "1", log)
 
 	assert.NoError(t, err)
 	assert.Nil(t, event)
