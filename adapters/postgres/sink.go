@@ -25,10 +25,10 @@ type PGSink struct {
 
 func NewSink(cfg SinkConfig) (*PGSink, error) {
 	if cfg.Pool == nil {
-		return nil, fmt.Errorf("Pool is required")
+		return nil, fmt.Errorf("pool is required")
 	}
 	if cfg.Handler == nil {
-		return nil, fmt.Errorf("Handler is required")
+		return nil, fmt.Errorf("handler is required")
 	}
 
 	if cfg.CopyThreshold <= 0 {
@@ -119,10 +119,10 @@ func (s *PGSink) Rollback(ctx context.Context, chainID string, toBlock uint64) e
 
 	// Update cursor to rollback point
     _, err = tx.Exec(ctx, `
-    INSERT INTO chronicle_cursors (chain_id, block_num, block_hash)
-    VALUES ($1, $2, $3)
-    ON CONFLICT (chain_id)
-    DO UPDATE SET block_num = $2, block_hash = $3
+        INSERT INTO chronicle_cursors (chain_id, block_num, block_hash)
+        VALUES ($1, $2, $3)
+        ON CONFLICT (chain_id)
+        DO UPDATE SET block_num = $2, block_hash = $3
     `, chainID, newBlock, "")
 	if err != nil {
 		return fmt.Errorf("failed to update cursor: %w", err)
