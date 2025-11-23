@@ -5,21 +5,24 @@ import (
 	"fmt"
 	"log"
 	"sync"
+	"time"
 
+	"github.com/ryuux05/godex/pkg/core/metrics"
 	"github.com/ryuux05/godex/pkg/core/rpc"
-	"github.com/ryuux05/godex/pkg/core/utils"
 	"github.com/ryuux05/godex/pkg/core/types"
+	"github.com/ryuux05/godex/pkg/core/utils"
+
 	//"github.com/ryuux05/godex/pkg/core/sink"
 	"golang.org/x/sync/errgroup"
 )
 
 type chainState struct {
 	// chainInfo stores chain information where the indexer going to query
-	// Specify RPC (endpoint and rate-limit) 
+	// Specify RPC (endpoint and rate-limit)
 	chainInfo ChainInfo
-	// cursor is a pointer that points the current block where the indexer is pointing 
+	// cursor is a pointer that points the current block where the indexer is pointing
 	cursor uint64
-	
+
 	// FIFO of endHeights in commit order
 	windowOrder []uint64
 	// Store block hash to compare the next block parent hash.
@@ -47,33 +50,45 @@ type Processor struct {
 	isRunning bool
 	// Mutex to access data safely
 	mu sync.RWMutex
+	//
+	metrics metrics.Metrics
 }
 
-func NewProcessor() *Processor {
+func NewProcessor(m metrics.Metrics) *Processor {
+	if m == nil {
+		m = metrics.Noop{}
+	}
 	return &Processor{
-		chains: make(map[string]*chainState),
-		logsCh: make(map[string]chan types.Log),
+		chains:    make(map[string]*chainState),
+		logsCh:    make(map[string]chan types.Log),
+		metrics:   m,
 		isRunning: false,
 	}
 }
 
-
 func (p *Processor) AddChain(chain ChainInfo, opts *Options) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	
-	if p.isRunning {
-        return fmt.Errorf("cannot add chain while processor is running")
-    }
 
-	cursor := opts.StartBlock; if cursor == 0 { cursor = 0 }
+	if p.isRunning {
+		return fmt.Errorf("cannot add chain while processor is running")
+	}
+
+	cursor := opts.StartBlock
+	if cursor == 0 {
+		cursor = 0
+	}
 
 	// Clamp the max storedwindowhash bound.
-	rs := uint64(opts.RangeSize)         // assume >0
+	rs := uint64(opts.RangeSize)                     // assume >0
 	base := (opts.ReorgLookbackBlocks + rs - 1) / rs // ceil
 	cap := base + 1
-	if cap < 8 { cap = 8 }
-	if cap > 256 { cap = 256 }
+	if cap < 8 {
+		cap = 8
+	}
+	if cap > 256 {
+		cap = 256
+	}
 
 	topics := utils.ConvertToTopics(opts.Topics)
 
@@ -85,17 +100,17 @@ func (p *Processor) AddChain(chain ChainInfo, opts *Options) error {
 	// Check if retryconfig exists, use default if not specified
 	if opts.RetryConfig == nil {
 		defaultCfg := rpc.DefaultRetryConfig()
-    	opts.RetryConfig = &defaultCfg
+		opts.RetryConfig = &defaultCfg
 	}
 
 	chainState := &chainState{
-		chainInfo: chain,
-		opts: opts,
-		cursor: cursor,
+		chainInfo:           chain,
+		opts:                opts,
+		cursor:              cursor,
 		storedWindowHashCap: cap,
-		storedWindowHash: make(map[uint64]string, cap),
-		hardFallbackBlocks: 1000,
-		topics: topics,
+		storedWindowHash:    make(map[uint64]string, cap),
+		hardFallbackBlocks:  1000,
+		topics:              topics,
 	}
 
 	p.chains[chain.ChainId] = chainState
@@ -108,23 +123,23 @@ func (p *Processor) GetChain(chainId string) ChainInfo {
 	return p.chains[chainId].chainInfo
 }
 
-func (p *Processor) Run(ctx context.Context) error{
+func (p *Processor) Run(ctx context.Context) error {
 	p.isRunning = true
-    defer func() { p.isRunning = false }()
+	defer func() { p.isRunning = false }()
 
 	g := errgroup.Group{}
 	for chainId, chain := range p.chains {
 		id := chainId
-        c := chain
+		c := chain
 		ch := p.logsCh[id]
-        
-		g.Go(func () error  {	
+
+		g.Go(func() error {
 			err := p.runChain(ctx, ch, c)
 			if err != nil {
-                log.Printf("Chain %s stopped: %v", id, err)
-                // Error logged but doesn't stop other chains
-            }
-            return err  
+				log.Printf("Chain %s stopped: %v", id, err)
+				// Error logged but doesn't stop other chains
+			}
+			return err
 		})
 
 	}
@@ -136,17 +151,17 @@ func (p *Processor) Run(ctx context.Context) error{
 func (p *Processor) Logs(chainId string) (<-chan types.Log, error) {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
-	
+
 	ch, exists := p.logsCh[chainId]
-    if !exists {
-        return nil, fmt.Errorf("chain %s not found", chainId)
-    }
-    return ch, nil
+	if !exists {
+		return nil, fmt.Errorf("chain %s not found", chainId)
+	}
+	return ch, nil
 }
 
 func (p *Processor) runChain(ctx context.Context, logsCh chan types.Log, chain *chainState) error {
 outer:
-	for {		
+	for {
 		rpcCtx, rpcCancel := context.WithCancel(ctx)
 
 		// compute for new head
@@ -184,13 +199,16 @@ outer:
 		if n <= 0 {
 			n = 1
 		}
-		
+
+		// Metrics to measure processor concurrency count.
+		p.metrics.SetProcessorConcurrency(chain.chainInfo.ChainId, uint64(n))
+
 		// plan jobs
 		type blockRange struct {
 			from uint64
-			to uint64
+			to   uint64
 		}
-		jobs := make(chan blockRange ,n)
+		jobs := make(chan blockRange, n)
 		go func() {
 			defer close(jobs)
 			rs := uint64(chain.opts.RangeSize)
@@ -205,11 +223,11 @@ outer:
 				case <-rpcCtx.Done():
 					return
 				case jobs <- blockRange{from, to}:
-				//log.Printf("planned job from block %d to block %d...\n", from, to)
+					//log.Printf("planned job from block %d to block %d...\n", from, to)
 				}
-			} 
-		}()	
-				
+			}
+		}()
+
 		// create waitgroup and make error channel
 		var wg sync.WaitGroup
 		wg.Add(n)
@@ -217,26 +235,28 @@ outer:
 
 		type doneMsg struct {
 			from uint64
-			to uint64
+			to   uint64
 			logs []types.Log
 		}
-		
+
 		doneCh := make(chan doneMsg, n)
 
 		for i := 0; i < n; i++ {
-			go func(){
+			go func() {
 				defer wg.Done()
 				for job := range jobs {
 					var logs []types.Log
 					var err error
-					err = rpc.RetryWithBackoff(rpcCtx, *chain.opts.RetryConfig, func() error {	
+					start := time.Now()
+					err = rpc.RetryWithBackoff(rpcCtx, *chain.opts.RetryConfig, func() error {
 						switch chain.opts.FetchMode {
 						case FetchModeLogs:
 							filter := types.Filter{
 								FromBlock: utils.Uint64ToHexQty(job.from),
-								ToBlock: utils.Uint64ToHexQty(job.to),
-								Topics: chain.topics,
+								ToBlock:   utils.Uint64ToHexQty(job.to),
+								Topics:    chain.topics,
 							}
+							// Record fetch time
 							logs, err = chain.chainInfo.RPC.GetLogs(rpcCtx, filter)
 
 						case FetchModeReceipts:
@@ -245,23 +265,25 @@ outer:
 
 						return err
 					})
-						if err != nil {
-							log.Println("Error fetching logs: ", err)
-							select {
-							case errCh <- err:
-								return
-							default:
-								return
-							}
-						}
-						//log.Printf("Here")
+
+					p.metrics.ObservedBlockFetchDuration(chain.chainInfo.ChainId, time.Since(start), err == nil)
+					if err != nil {
+						log.Println("Error fetching logs: ", err)
 						select {
-							case <-rpcCtx.Done():
-								return
-							case doneCh <- doneMsg{from: job.from, to: job.to, logs: logs}:
-								//log.Printf("sending log to arbiter from block %d to block %d...\n", job.from, job.to)
+						case errCh <- err:
+							return
+						default:
+							return
 						}
-			
+					}
+					//log.Printf("Here")
+					select {
+					case <-rpcCtx.Done():
+						return
+					case doneCh <- doneMsg{from: job.from, to: job.to, logs: logs}:
+						//log.Printf("sending log to arbiter from block %d to block %d...\n", job.from, job.to)
+					}
+
 				}
 			}()
 		}
@@ -279,7 +301,7 @@ outer:
 		go func() {
 			defer close(arbiterDone)
 			window := make(map[uint64]uint64)
-			windowLogs:= make(map[uint64][]types.Log)
+			windowLogs := make(map[uint64][]types.Log)
 			next := chain.cursor + 1
 
 			for {
@@ -287,13 +309,15 @@ outer:
 				case <-rpcCtx.Done():
 					return
 				case dm, ok := <-doneCh:
-					if !ok {return};
-					
+					if !ok {
+						return
+					}
+
 					window[dm.from] = dm.to
 					windowLogs[dm.from] = dm.logs
 
 					for end, ok2 := window[next]; ok2; end, ok2 = window[next] {
-						
+
 						// Get start window blockhash and compare it with the stored blockhash
 						var block types.Block
 						err := rpc.RetryWithBackoff(ctx, *chain.opts.RetryConfig, func() error {
@@ -303,27 +327,30 @@ outer:
 						})
 
 						if err != nil {
-							if rpcCtx.Err() != nil { 
-								return 
-							} else {    
-								select { 
-									case errCh <- err: 
-									default: 
-								} 
+							if rpcCtx.Err() != nil {
+								return
+							} else {
+								select {
+								case errCh <- err:
+								default:
+								}
 								return
 							}
 						}
 
-						
 						if next == 0 {
 							break
 						}
-						
+
 						//Compare to parents
-						parent, ok := chain.storedWindowHash[next - 1]
-						if (ok && block.ParentHash != parent) {
+						parent, ok := chain.storedWindowHash[next-1]
+						if ok && block.ParentHash != parent {
 							log.Println("Hash mismatch, reorg happened...")
 							rpcCancel()
+
+							// Metrics to measure reorgs
+							p.metrics.IncReorgs(chain.chainInfo.ChainId)
+							
 							ancestor := p.handleReorg(ctx, chain)
 
 							chain.cursor = ancestor
@@ -333,21 +360,27 @@ outer:
 							log.Printf("Processed log from block %d to block %d...\n", next, end)
 							// Commit logs to log channel
 							if logs := windowLogs[next]; len(logs) > 0 {
-								for _, l:= range logs {
-								select {
-								case <-rpcCtx.Done():
-									return
-								case logsCh <- l:
-								}
+								for _, l := range logs {
+									select {
+									case <-rpcCtx.Done():
+										return
+									case logsCh <- l:
+									}
 								}
 							}
-							
+
 							delete(windowLogs, next)
-							delete(window, next)	
+							delete(window, next)
 							chain.cursor = end
 							next = end + 1
+
+							lag := head - chain.cursor
+							p.metrics.ObservedBlockLag(chain.chainInfo.ChainId, lag)
+
+							// Set metrics for indexed height
+							p.metrics.SetIndexedHeight(chain.chainInfo.ChainId, chain.cursor)
 						}
-						
+
 						// Get the end block blockhash after committing
 						err = rpc.RetryWithBackoff(ctx, *chain.opts.RetryConfig, func() error {
 							var err error
@@ -355,9 +388,14 @@ outer:
 							return err
 						})
 						if err != nil {
-							if rpcCtx.Err() != nil { return }        // batch was canceled; ignore
+							if rpcCtx.Err() != nil {
+								return
+							} // batch was canceled; ignore
 							log.Println("Error getting window end block: ", err)
-							select { case errCh <- err: default: }
+							select {
+							case errCh <- err:
+							default:
+							}
 							return
 						}
 
@@ -366,27 +404,27 @@ outer:
 				}
 			}
 		}()
-		
+
 		// listen to condition channel
-		for{
+		for {
 			select {
 			case <-rpcCtx.Done():
-				<- done
-				<- arbiterDone
+				<-done
+				<-arbiterDone
 				continue outer
 			case <-done:
-				<- arbiterDone
+				<-arbiterDone
 				continue outer
 			case err := <-errCh:
 				log.Println("Error received cancelling context")
 				rpcCancel()
 				<-done
-				<- arbiterDone
+				<-arbiterDone
 				return err
-			case <- ctx.Done():
+			case <-ctx.Done():
 				rpcCancel()
-				<- done
-				<- arbiterDone
+				<-done
+				<-arbiterDone
 				return nil
 			}
 
@@ -399,32 +437,42 @@ func (p *Processor) handleReorg(ctx context.Context, chain *chainState) uint64 {
 	ancestor := chain.cursor
 	for i := uint64(0); i < chain.storedWindowHashCap; i++ {
 
-		fallback := chain.cursor; if fallback > chain.hardFallbackBlocks { fallback -= chain.hardFallbackBlocks } else { fallback = 0 }
+		fallback := chain.cursor
+		if fallback > chain.hardFallbackBlocks {
+			fallback -= chain.hardFallbackBlocks
+		} else {
+			fallback = 0
+		}
 
-		windowHeadBlock, err := chain.chainInfo.RPC.GetBlock(ctx, utils.Uint64ToHexQty(ancestor + 1))
+		windowHeadBlock, err := chain.chainInfo.RPC.GetBlock(ctx, utils.Uint64ToHexQty(ancestor+1))
 		if err != nil {
 			return fallback
 		}
-		
+
 		if windowHeadBlock.ParentHash == chain.storedWindowHash[ancestor] {
 			p.dropWindowHash(ancestor, chain)
 			log.Println("Found ancestor: ", ancestor)
 			return ancestor
 		}
-		
+
 		if ancestor < uint64(chain.opts.RangeSize) {
 			ancestor = 0
 			break
 		}
 		ancestor -= uint64(chain.opts.RangeSize)
 
-		select{
-		case<- ctx.Done():
+		select {
+		case <-ctx.Done():
 			return fallback
 		default:
 		}
 	}
-	fallback := chain.cursor; if fallback > chain.hardFallbackBlocks { fallback -= chain.hardFallbackBlocks } else { fallback = 0 }
+	fallback := chain.cursor
+	if fallback > chain.hardFallbackBlocks {
+		fallback -= chain.hardFallbackBlocks
+	} else {
+		fallback = 0
+	}
 	log.Println("Hard fallback triggered...")
 	if fallback <= 0 {
 		fallback = 0
@@ -437,7 +485,7 @@ func (p *Processor) storeWindowHash(to uint64, blockHash string, chain *chainSta
 	_, exist := chain.storedWindowHash[to]
 	if exist {
 		chain.storedWindowHash[to] = blockHash
-	}else {
+	} else {
 		l := len(chain.windowOrder)
 		if uint64(l) >= chain.storedWindowHashCap {
 			old := chain.windowOrder[0]
@@ -451,20 +499,20 @@ func (p *Processor) storeWindowHash(to uint64, blockHash string, chain *chainSta
 }
 
 func (p *Processor) dropWindowHash(after uint64, chain *chainState) {
-		// walk tail backward removing entries > after
-		i := len(chain.windowOrder) - 1
-		for i >= 0 && chain.windowOrder[i] > after {
-			delete(chain.storedWindowHash, chain.windowOrder[i])
-			i--
-		}
+	// walk tail backward removing entries > after
+	i := len(chain.windowOrder) - 1
+	for i >= 0 && chain.windowOrder[i] > after {
+		delete(chain.storedWindowHash, chain.windowOrder[i])
+		i--
+	}
 
-		chain.windowOrder = chain.windowOrder[:i+1]
+	chain.windowOrder = chain.windowOrder[:i+1]
 }
 
 // Helper function to get logs from receipts
-func(p *Processor) fetchLogsFromReceipts(ctx context.Context, from uint64, to uint64, chain *chainState) ([]types.Log, error){
+func (p *Processor) fetchLogsFromReceipts(ctx context.Context, from uint64, to uint64, chain *chainState) ([]types.Log, error) {
 	var allLogs []types.Log
-	for blockNum := from; blockNum <= to; blockNum ++ {
+	for blockNum := from; blockNum <= to; blockNum++ {
 		s_blockNum := utils.Uint64ToHexQty(blockNum)
 		receipts, err := chain.chainInfo.RPC.GetBlockReceipts(ctx, s_blockNum)
 		if err != nil {
@@ -474,8 +522,8 @@ func(p *Processor) fetchLogsFromReceipts(ctx context.Context, from uint64, to ui
 		for _, receipt := range receipts {
 			for _, log := range receipt.Logs {
 				if p.matchesTopicFilter(log, chain) {
-                    allLogs = append(allLogs, log)
-                }
+					allLogs = append(allLogs, log)
+				}
 			}
 		}
 	}
@@ -483,31 +531,26 @@ func(p *Processor) fetchLogsFromReceipts(ctx context.Context, from uint64, to ui
 }
 
 // Checks if a log matches the configurated topic
-func(p *Processor) matchesTopicFilter(log types.Log, chain *chainState) bool {
+func (p *Processor) matchesTopicFilter(log types.Log, chain *chainState) bool {
 	// If there is no topic specified then its true by default
 	if len(chain.opts.Topics) == 0 {
 		return true
 	}
 
 	// Check if log has enough topics
-    if len(log.Topics) == 0 {
-        return false
-    }
+	if len(log.Topics) == 0 {
+		return false
+	}
 
 	// Match first topic (event signature)
-    for _, filterTopic := range chain.topics {
-        if len(log.Topics) > 0 {
-            logTopic := log.Topics[0]
+	for _, filterTopic := range chain.topics {
+		if len(log.Topics) > 0 {
+			logTopic := log.Topics[0]
 			if logTopic == filterTopic {
 				return true
 			}
-        }
-    }
-    
-    return false
+		}
+	}
+
+	return false
 }
-
-
-
-
-

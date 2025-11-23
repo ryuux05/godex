@@ -5,9 +5,11 @@ import (
 	_ "embed"
 	"fmt"
 	"os"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/ryuux05/godex/pkg/core/metrics"
 	"github.com/ryuux05/godex/pkg/core/types"
 )
 
@@ -15,12 +17,14 @@ type SinkConfig struct {
 	Pool          *pgxpool.Pool
 	Handler       Handler
 	CopyThreshold int
+	Metrics metrics.Metrics
 }
 
 type PGSink struct {
 	db            *pgxpool.Pool
 	handler       Handler
 	copyThreshold int
+	metrics metrics.Metrics
 }
 
 func NewSink(cfg SinkConfig) (*PGSink, error) {
@@ -31,11 +35,16 @@ func NewSink(cfg SinkConfig) (*PGSink, error) {
 		return nil, fmt.Errorf("handler is required")
 	}
 
+	m := cfg.Metrics
+    if m == nil {
+        m = metrics.Noop{} // or expose a constructor for this
+    }
+
 	if cfg.CopyThreshold <= 0 {
 		cfg.CopyThreshold = 32 // or 64
 	}
 
-	pgSink := &PGSink{db: cfg.Pool, handler: cfg.Handler, copyThreshold: cfg.CopyThreshold}
+	pgSink := &PGSink{db: cfg.Pool, handler: cfg.Handler, copyThreshold: cfg.CopyThreshold, metrics: m}
 	if err := pgSink.initInternalSchema(context.Background()); err != nil {
 		return nil, fmt.Errorf("init internal schema: %w", err)
 	}
@@ -46,6 +55,17 @@ func (s *PGSink) Store(ctx context.Context, events []types.Event) (err error) {
 	if len(events) == 0 {
 		return nil
 	}
+
+	start := time.Now()
+	chainId := events[0].ChainId
+    success := false
+    defer func() {
+        d := time.Since(start)
+        s.metrics.ObservedSinkWriteDuration(chainId, d, success)
+        if !success && err != nil {
+            s.metrics.IncSinkErrors(chainId)
+        }
+    }()
 
 	tx, err := s.db.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
@@ -90,11 +110,37 @@ func (s *PGSink) Store(ctx context.Context, events []types.Event) (err error) {
 	if err != nil {
 		return fmt.Errorf("commit transaction: %w", err)
 	}
+
+	success = true
+
+	// Metrics to measure sink writes
+	s.metrics.IncSinkWrites(chainId, uint64(len(events)))
+
+	// Metrics to set persisted height
+	s.metrics.SetIndexedHeight(chainId, events[len(events) - 1].BlockNumber)
+
+	// Metrics to measure how many persisted have been processed
+	blocks := make(map[uint64]struct{}, len(events))
+    for _, ev := range events {
+        blocks[ev.BlockNumber] = struct{}{}
+    }
+    s.metrics.IncBlocksProcessed(chainId, uint64(len(blocks)))
+
 	return nil
 }
 
-func (s *PGSink) Rollback(ctx context.Context, chainID string, toBlock uint64) error {
+func (s *PGSink) Rollback(ctx context.Context, chainId string, toBlock uint64) (err error) {
+	start := time.Now()
+    success := false
+    defer func() {
+        s.metrics.ObservedSinkWriteDuration(chainId, time.Since(start), success)
+        if !success && err != nil {
+            s.metrics.IncSinkErrors(chainId)
+        }
+    }()
+
 	tx, err := s.db.BeginTx(ctx, pgx.TxOptions{})
+
 	if err != nil {
 		return fmt.Errorf("begin transaction: %w", err)
 	}
@@ -108,7 +154,7 @@ func (s *PGSink) Rollback(ctx context.Context, chainID string, toBlock uint64) e
 	_, err = tx.Exec(ctx, `
         DELETE FROM chronicle_events
         WHERE chain_id = $1 AND block_num >= $2
-    `, chainID, toBlock)
+    `, chainId, toBlock)
 	if err != nil {
 		return fmt.Errorf("failed to delete events: %w", err)
 	}
@@ -123,7 +169,7 @@ func (s *PGSink) Rollback(ctx context.Context, chainID string, toBlock uint64) e
         VALUES ($1, $2, $3)
         ON CONFLICT (chain_id)
         DO UPDATE SET block_num = $2, block_hash = $3
-    `, chainID, newBlock, "")
+    `, chainId, newBlock, "")
 	if err != nil {
 		return fmt.Errorf("failed to update cursor: %w", err)
 	}
@@ -131,6 +177,11 @@ func (s *PGSink) Rollback(ctx context.Context, chainID string, toBlock uint64) e
 	if err = tx.Commit(ctx); err != nil {
 		return fmt.Errorf("commit rollback: %w", err)
 	}
+
+	success = true
+
+	// Metrics to set new indexedheight after rollback
+	s.metrics.SetIndexedHeight(chainId, newBlock)
 
 	return nil
 }

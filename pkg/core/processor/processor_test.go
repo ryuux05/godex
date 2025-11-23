@@ -156,7 +156,7 @@ func TestRunWithOneLog_Success(t *testing.T) {
 		RPC: rpc,
 	}
 
-	processor := NewProcessor()
+	processor := NewProcessor(nil)
 	processor.AddChain(chain, &opts)
 	go func() { _ = processor.Run(ctx)}()
 
@@ -310,7 +310,7 @@ func TestRunWithMultipleLog_Success(t *testing.T) {
 		RPC: rpc,
 	}
 
-	processor := NewProcessor()
+	processor := NewProcessor(nil)
 	processor.AddChain(chain, &opts)
 	go func() { _ = processor.Run(ctx)}()
 
@@ -455,7 +455,7 @@ func TestReorg_Success(t *testing.T) {
 		RPC: rpc,
 	}
 
-	processor := NewProcessor()
+	processor := NewProcessor(nil)
 	processor.AddChain(chain, &opts)
 	go func() { _ = processor.Run(ctx)}()
 
@@ -601,7 +601,7 @@ func TestRunWithRetry_Success(t *testing.T) {
 		RPC: RPC,
 	}
 
-	processor := NewProcessor()
+	processor := NewProcessor(nil)
 	processor.AddChain(chain, &opts)
 	go func() { _ = processor.Run(ctx)}()
 
@@ -715,7 +715,7 @@ func TestMultiChainRun_Success(t *testing.T) {
     ethRPC := rpc.NewHTTPRPC(srv.URL, 0)
     polyRPC := rpc.NewHTTPRPC(srv.URL, 0)
     
-    processor := NewProcessor()
+    processor := NewProcessor(nil)
     
     // Add Ethereum chain
     ethOpts := &Options{
@@ -879,7 +879,7 @@ func TestMultiChain_IndependentErrors(t *testing.T) {
     }))
     defer polySrv.Close()
     
-    processor := NewProcessor()
+    processor := NewProcessor(nil)
     
     // Fast retry config so Ethereum fails quickly
     fastRetry := &rpc.RetryConfig{
@@ -1027,7 +1027,7 @@ func TestMultiChain_BothChainsSucceed(t *testing.T) {
     polySrv := createWorkingServer("poly")
     defer polySrv.Close()
     
-    processor := NewProcessor()
+    processor := NewProcessor(nil)
     
     opts := &Options{
         RangeSize:          1,
@@ -1096,7 +1096,7 @@ func TestMultiChain_BothChainsSucceed(t *testing.T) {
     mu.Unlock()
 }
 func TestMultiChain_AddChainWhileRunning(t *testing.T) {
-    processor := NewProcessor()
+    processor := NewProcessor(nil)
     
     opts := &Options{
         RangeSize:  2,
