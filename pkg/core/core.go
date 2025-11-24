@@ -47,3 +47,4 @@ var NewProcessor = processor.NewProcessor
 
 // RPC
 var NewHTTPRPC = rpc.NewHTTPRPC
+
