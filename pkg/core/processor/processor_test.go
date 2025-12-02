@@ -136,7 +136,7 @@ func TestRunWithOneLog_Success(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	rpc := rpc.NewHTTPRPC(srv.URL, 0)
+	rpc := rpc.NewHTTPRPC(srv.URL, 0, 0)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -291,7 +291,7 @@ func TestRunWithMultipleLog_Success(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	rpc := rpc.NewHTTPRPC(srv.URL, 0)
+	rpc := rpc.NewHTTPRPC(srv.URL, 0, 0)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
@@ -436,7 +436,7 @@ func TestReorg_Success(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	rpc := rpc.NewHTTPRPC(srv.URL, 0)
+	rpc := rpc.NewHTTPRPC(srv.URL, 0, 0)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
@@ -571,7 +571,7 @@ func TestRunWithRetry_Success(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	RPC := rpc.NewHTTPRPC(srv.URL, 0)
+	RPC := rpc.NewHTTPRPC(srv.URL, 0, 0)
 
 	ctx, cancel := context.WithTimeout(context.Background(),  5 * time.Second)
 	defer cancel()
@@ -712,8 +712,8 @@ func TestMultiChainRun_Success(t *testing.T) {
     defer srv.Close()
     
     // Create two separate RPC clients (simulating different chains)
-    ethRPC := rpc.NewHTTPRPC(srv.URL, 0)
-    polyRPC := rpc.NewHTTPRPC(srv.URL, 0)
+    ethRPC := rpc.NewHTTPRPC(srv.URL, 0, 0)
+    polyRPC := rpc.NewHTTPRPC(srv.URL, 0, 0)
     
     processor := NewProcessor(nil)
     
@@ -916,14 +916,14 @@ func TestMultiChain_IndependentErrors(t *testing.T) {
     err := processor.AddChain(ChainInfo{
         ChainId: "1",
         Name:    "Ethereum",
-        RPC:     rpc.NewHTTPRPC(ethSrv.URL, 0),
+        RPC:     rpc.NewHTTPRPC(ethSrv.URL, 0, 0),
     }, ethOpts)
     assert.NoError(t, err)
     
     err = processor.AddChain(ChainInfo{
         ChainId: "137",
         Name:    "Polygon",
-        RPC:     rpc.NewHTTPRPC(polySrv.URL, 0),
+        RPC:     rpc.NewHTTPRPC(polySrv.URL, 0, 0),
     }, polyOpts)
     assert.NoError(t, err)
     
@@ -1044,8 +1044,8 @@ func TestMultiChain_BothChainsSucceed(t *testing.T) {
         },
     }
     
-    processor.AddChain(ChainInfo{ChainId: "1", Name: "Eth", RPC: rpc.NewHTTPRPC(ethSrv.URL, 0)}, opts)
-    processor.AddChain(ChainInfo{ChainId: "137", Name: "Poly", RPC: rpc.NewHTTPRPC(polySrv.URL, 0)}, opts)
+    processor.AddChain(ChainInfo{ChainId: "1", Name: "Eth", RPC: rpc.NewHTTPRPC(ethSrv.URL, 0, 0)}, opts)
+    processor.AddChain(ChainInfo{ChainId: "137", Name: "Poly", RPC: rpc.NewHTTPRPC(polySrv.URL, 0, 0)}, opts)
     
     ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
     defer cancel()
@@ -1108,7 +1108,7 @@ func TestMultiChain_AddChainWhileRunning(t *testing.T) {
     }))
     defer srv.Close()
     
-    processor.AddChain(ChainInfo{ChainId: "1", RPC: rpc.NewHTTPRPC(srv.URL, 0)}, opts)
+    processor.AddChain(ChainInfo{ChainId: "1", RPC: rpc.NewHTTPRPC(srv.URL, 0, 0)}, opts)
     
     ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
     defer cancel()
@@ -1117,7 +1117,7 @@ func TestMultiChain_AddChainWhileRunning(t *testing.T) {
     time.Sleep(100 * time.Millisecond) // Let it start
     
     // Try to add chain while running
-    err := processor.AddChain(ChainInfo{ChainId: "137", RPC: rpc.NewHTTPRPC(srv.URL, 0)}, opts)
+    err := processor.AddChain(ChainInfo{ChainId: "137", RPC: rpc.NewHTTPRPC(srv.URL, 0, 0)}, opts)
     assert.Error(t, err)
     assert.Contains(t, err.Error(), "running")
 }

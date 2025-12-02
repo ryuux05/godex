@@ -5,11 +5,15 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"sort"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/ryuux05/godex/pkg/core/types"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestHead_Success(t *testing.T) {
@@ -23,7 +27,7 @@ func TestHead_Success(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	rpc := NewHTTPRPC(srv.URL, 0)
+	rpc := NewHTTPRPC(srv.URL, 0, 0)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
@@ -33,7 +37,7 @@ func TestHead_Success(t *testing.T) {
 	assert.Equal(t, "0x10d4f", got)
 }
 
-func TestHead_RPCError (t *testing.T) {
+func TestHead_RPCError(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{
@@ -47,7 +51,7 @@ func TestHead_RPCError (t *testing.T) {
 	}))
 	defer srv.Close()
 
-	rpc := NewHTTPRPC(srv.URL, 0)
+	rpc := NewHTTPRPC(srv.URL, 0, 0)
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
@@ -61,7 +65,7 @@ func TestHead_HTTPStatuNotOk(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	rpc := NewHTTPRPC(srv.URL, 0)
+	rpc := NewHTTPRPC(srv.URL, 0, 0)
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
@@ -84,7 +88,7 @@ func TestGetBlock_Success(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	rpc := NewHTTPRPC(srv.URL, 0)
+	rpc := NewHTTPRPC(srv.URL, 0, 0)
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
@@ -109,7 +113,7 @@ func TestGetBlock_RPCError(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	rpc := NewHTTPRPC(srv.URL, 0)
+	rpc := NewHTTPRPC(srv.URL, 0, 0)
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
@@ -123,7 +127,7 @@ func TestGetBlock_HTTPStatusNotOK(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	rpc := NewHTTPRPC(srv.URL, 0)
+	rpc := NewHTTPRPC(srv.URL, 0, 0)
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
@@ -153,7 +157,7 @@ func TestGetLogs_Success(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	rpc := NewHTTPRPC(srv.URL, 0)
+	rpc := NewHTTPRPC(srv.URL, 0, 0)
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
@@ -167,7 +171,7 @@ func TestGetLogs_Success(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Len(t, logs, 1)
 	assert.Equal(t, "0xabc", logs[0].Address)
-	assert.Equal(t,[]string{"0xddf252ad"}, logs[0].Topics)
+	assert.Equal(t, []string{"0xddf252ad"}, logs[0].Topics)
 	assert.Equal(t, "0x1", logs[0].BlockNumber)
 }
 
@@ -184,7 +188,7 @@ func TestGetLogs_RPCError(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	rpc := NewHTTPRPC(srv.URL, 0)
+	rpc := NewHTTPRPC(srv.URL, 0, 0)
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
@@ -198,7 +202,7 @@ func TestGetLogs_HTTPStatusNotOK(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	rpc := NewHTTPRPC(srv.URL, 0)
+	rpc := NewHTTPRPC(srv.URL, 0, 0)
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
@@ -208,7 +212,7 @@ func TestGetLogs_HTTPStatusNotOK(t *testing.T) {
 
 func TestGetBlockReceipts_Success(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_ = json.NewEncoder(w).Encode(map[string]any {
+		_ = json.NewEncoder(w).Encode(map[string]any{
 			"jsonrpc": "2.0",
 			"id":      1,
 			"result": []map[string]any{
@@ -280,7 +284,7 @@ func TestGetBlockReceipts_Success(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	rpc := NewHTTPRPC(srv.URL, 0)
+	rpc := NewHTTPRPC(srv.URL, 0, 0)
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
@@ -319,11 +323,11 @@ func TestGetBlockReceipts_HTTPError(t *testing.T) {
 		})
 	}))
 	defer srv.Close()
-	
-	rpc := NewHTTPRPC(srv.URL, 0)
+
+	rpc := NewHTTPRPC(srv.URL, 0, 0)
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	
+
 	receipts, err := rpc.GetBlockReceipts(ctx, "0x000")
 	assert.Error(t, err)
 	assert.Len(t, receipts, 0)
@@ -331,19 +335,128 @@ func TestGetBlockReceipts_HTTPError(t *testing.T) {
 
 func TestGetBlockReceipts_EmptyBlock(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_ = json.NewEncoder(w).Encode(map[string]any {
+		_ = json.NewEncoder(w).Encode(map[string]any{
 			"jsonrpc": "2.0",
 			"id":      1,
-			"result": []map[string]any {},
+			"result":  []map[string]any{},
 		})
 	}))
 	defer srv.Close()
 
-	rpc := NewHTTPRPC(srv.URL, 0)
+	rpc := NewHTTPRPC(srv.URL, 0, 0)
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	
+
 	receipt, err := rpc.GetBlockReceipts(ctx, "0x000")
 	assert.NoError(t, err)
 	assert.Len(t, receipt, 0)
+}
+
+func TestHttpRateLimit_Success(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"jsonrpc": "2.0",
+			"id":      1,
+			"result":  "0x10d4f",
+		})
+	}))
+	defer srv.Close()
+
+	rpc := NewHTTPRPC(srv.URL, 1, 1)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	start := time.Now()
+	laps := make([]time.Duration, 0, 3)
+	for i := 0; i < 3; i++ {
+		_, err := rpc.Head(ctx)
+		assert.NoError(t, err)
+		laps = append(laps, time.Since(start))
+	}
+
+	require.Less(t, laps[0], laps[1])
+	require.Less(t, laps[1], laps[2])
+
+	// First call should be instant
+	require.Less(t, laps[0], 100*time.Millisecond)
+	// There should be ~1s after struct
+	require.Less(t, laps[1], 1100*time.Millisecond)
+	// There should be more ~2s after start
+	require.Less(t, laps[2], 2100*time.Millisecond)
+
+}
+
+func TestHttpRateLimitBurst_Success(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"jsonrpc": "2.0",
+			"id":      1,
+			"result":  "0x10d4f",
+		})
+	}))
+	defer srv.Close()
+	done := make(chan struct{})
+
+	const workers = 5
+
+	var idx int64
+
+	var wg sync.WaitGroup
+	wg.Add(workers)
+
+	rpc := NewHTTPRPC(srv.URL, 3, 3)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	laps := make([]time.Time, 25)
+	
+	for i := 0; i < workers; i++ {
+		go func() {
+			defer wg.Done()
+			<-done
+			for j := 0; j < 5; j++ {
+				_, err := rpc.Head(ctx)
+				assert.NoError(t, err)
+				// Make sure each goroutine have unique index
+				k := atomic.AddInt64(&idx, 1) - 1
+            	laps[k] = time.Now()
+			}
+		}()
+		
+	}
+
+	close(done)
+	wg.Wait()
+
+	// Sort out the laps
+	sort.Slice(laps, func(i, j int) bool {
+		return laps[i].Before(laps[j])
+	})
+
+	window := time.Second
+	maxInWindow := 0
+
+	for i := 0; i < len(laps); i++ {
+		start := laps[i]
+		end := start.Add(window)
+
+		count := 1
+		for j := i + 1; j < len(laps); j++ {
+			if laps[j].After(end) {
+				break
+			}
+			count++
+		}
+
+		if count > maxInWindow {
+			maxInWindow = count
+		}
+	}
+
+	allowed := 5
+	require.LessOrEqual(t, maxInWindow, allowed)
 }

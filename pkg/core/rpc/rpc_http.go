@@ -17,6 +17,8 @@ type HTTPRPC struct{
 	endpoint string
 	// requests-per-second
 	rateLimit uint16
+	// maximum token usage at once.
+	burstLimit uint16
 	// http client
 	client *http.Client
 	// rate limiter
@@ -36,14 +38,15 @@ type rpcResponse[T any] struct {
 // NewHTTPRPC creates an HTTP JSON-RPC client.
 // endpoint is the base RPC URL (e.g., https://...).
 // rateLimit is the maximum requests per second (0 disables limiting).
-func NewHTTPRPC(endpoint string, rateLimit uint16) *HTTPRPC {
+func NewHTTPRPC(endpoint string, rateLimit uint16, burstLimit uint16) *HTTPRPC {
 	var lim *rate.Limiter
 	if rateLimit > 0 {
-		lim = rate.NewLimiter(rate.Limit(rateLimit), int(rateLimit))
+		lim = rate.NewLimiter(rate.Limit(rateLimit), int(burstLimit))
 	}
 	return &HTTPRPC{
 		endpoint: endpoint,
 		rateLimit: rateLimit,
+		burstLimit: burstLimit,
 		client: &http.Client{Timeout: 10 * time.Second},
 		limiter: lim,
 	}
