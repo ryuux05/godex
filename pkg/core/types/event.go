@@ -15,6 +15,9 @@ type EventInput struct {
 }
 
 type Event struct {
+	// Indempotent key to prevent retries/replays
+	Id string `json:"id"`
+	ChainId string `json:"chainId"`
 	// Block that emits the event
 	BlockNumber uint64 `json:"blockNumber"`
 	// The hash of the block that emits this event
@@ -25,6 +28,7 @@ type Event struct {
 	TransactionHash string `json:"transactionHash"`
 	// The integer of the log index position in the block.
 	LogIndex uint64 `json:"logIndex"`
+	Timestamp uint64 `json:"timestamp"`
 	// Event function name
 	EventType string `json:"EventType"`
 	// The output of the log

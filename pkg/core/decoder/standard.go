@@ -24,7 +24,7 @@ func NewStandsardDecoder() *StandardDecoder {
 	}
 }
 
-func (d *StandardDecoder) Decode(name string, log types.Log) (*types.Event, error) {
+func (d *StandardDecoder) Decode(name string, chainId string, log types.Log) (*types.Event, error) {
 	// If topic is empty skip it
 	if len(log.Topics) == 0 {
 		return nil, nil 
@@ -103,7 +103,10 @@ func (d *StandardDecoder) Decode(name string, log types.Log) (*types.Event, erro
 		return nil, err
 	}
 
+	id := fmt.Sprintf("%s:%s:%d", log.BlockHash, log.TransactionHash, logIndex)
 	return &types.Event{
+		Id: id,
+		ChainId: chainId,
 		BlockNumber: blockNumber,
 		BlockHash: log.BlockHash,
 		Address: log.Address,

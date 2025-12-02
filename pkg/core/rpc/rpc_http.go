@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"time"
-
+	"golang.org/x/time/rate"
 	"github.com/ryuux05/godex/pkg/core/errors"
 	"github.com/ryuux05/godex/pkg/core/types"
 )
@@ -17,8 +17,12 @@ type HTTPRPC struct{
 	endpoint string
 	// requests-per-second
 	rateLimit uint16
+	// maximum token usage at once.
+	burstLimit uint16
 	// http client
 	client *http.Client
+	// rate limiter
+	limiter *rate.Limiter
 }
 
 
@@ -34,15 +38,27 @@ type rpcResponse[T any] struct {
 // NewHTTPRPC creates an HTTP JSON-RPC client.
 // endpoint is the base RPC URL (e.g., https://...).
 // rateLimit is the maximum requests per second (0 disables limiting).
-func NewHTTPRPC(endpoint string, rateLimit uint16) *HTTPRPC {
+func NewHTTPRPC(endpoint string, rateLimit uint16, burstLimit uint16) *HTTPRPC {
+	var lim *rate.Limiter
+	if rateLimit > 0 {
+		lim = rate.NewLimiter(rate.Limit(rateLimit), int(burstLimit))
+	}
 	return &HTTPRPC{
 		endpoint: endpoint,
 		rateLimit: rateLimit,
+		burstLimit: burstLimit,
 		client: &http.Client{Timeout: 10 * time.Second},
+		limiter: lim,
 	}
 }
 
 func(r *HTTPRPC) Head(ctx context.Context) (string, error) {
+	if r.limiter != nil {
+		if err := r.limiter.Wait(ctx); err != nil {
+			return "", err
+		}
+	}
+
 	body := map[string]interface{} {
 		"jsonrpc": "2.0",
 		"id": 1,
@@ -98,6 +114,12 @@ func(r *HTTPRPC) Head(ctx context.Context) (string, error) {
 
 // GetBlock returns the block header for now (second params is set to false)
 func(r *HTTPRPC) GetBlock(ctx context.Context, blockNumber string) (types.Block, error) {
+	if r.limiter != nil {
+		if err := r.limiter.Wait(ctx); err != nil {
+			return types.Block{}, err
+		}
+	}
+
 	body := map[string]interface{} {
 		"jsonrpc": "2.0",
 		"id": 1,
@@ -152,6 +174,12 @@ func(r *HTTPRPC) GetBlock(ctx context.Context, blockNumber string) (types.Block,
 }
 
 func(r *HTTPRPC) GetLogs(ctx context.Context, filter types.Filter) ([]types.Log, error) {
+	if r.limiter != nil {
+		if err := r.limiter.Wait(ctx); err != nil {
+			return []types.Log{}, err
+		}
+	}
+	
 	body := map[string]interface{} {
 		"jsonrpc": "2.0",
 		"id": 1,
@@ -202,6 +230,12 @@ func(r *HTTPRPC) GetLogs(ctx context.Context, filter types.Filter) ([]types.Log,
 }
 
 func(r *HTTPRPC) GetBlockReceipts(ctx context.Context, blockNumber string) ([]types.Receipt, error) {
+	if r.limiter != nil {
+		if err := r.limiter.Wait(ctx); err != nil {
+			return []types.Receipt{}, err
+		}
+	}
+
 	body := map[string]interface{} {
 		"jsonrpc": "2.0",
 		"id": 1,
