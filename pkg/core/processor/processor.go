@@ -22,7 +22,6 @@ type chainState struct {
 	chainInfo ChainInfo
 	// cursor is a pointer that points the current block where the indexer is pointing
 	cursor uint64
-
 	// FIFO of endHeights in commit order
 	windowOrder []uint64
 	// Store block hash to compare the next block parent hash.
@@ -34,6 +33,10 @@ type chainState struct {
 	hardFallbackBlocks uint64
 	// Storage to store the formatted topics
 	topics []string
+	// Map of whitelisted contract for processor to queue
+	addressSet map[string] struct{}
+	// List of whitelisted contract addresses
+	addresses []string
 	// options for processor
 	opts *Options
 }
@@ -90,7 +93,17 @@ func (p *Processor) AddChain(chain ChainInfo, opts *Options) error {
 		cap = 256
 	}
 
+	// Convert topics to keccak signature
 	topics := utils.ConvertToTopics(opts.Topics)
+
+	// normalize all addresses before storing it
+	addressSet := make(map[string]struct{}, len(opts.Addresses))
+	addresses := make([]string, len(opts.Addresses))
+
+	for _, addr := range opts.Addresses {
+		addressSet[string(addr)] = struct{}{}
+		addresses = append(addresses, string(addr))
+	}
 
 	// Check if fetch mode exists, fallback to logs as default if not specified
 	if opts.FetchMode == "" {
@@ -111,6 +124,8 @@ func (p *Processor) AddChain(chain ChainInfo, opts *Options) error {
 		storedWindowHash:    make(map[uint64]string, cap),
 		hardFallbackBlocks:  1000,
 		topics:              topics,
+		addresses:           addresses,
+		addressSet: addressSet,
 	}
 
 	p.chains[chain.ChainId] = chainState
@@ -255,6 +270,7 @@ outer:
 								FromBlock: utils.Uint64ToHexQty(job.from),
 								ToBlock:   utils.Uint64ToHexQty(job.to),
 								Topics:    chain.topics,
+								Address:   chain.addresses,
 							}
 							// Record fetch time
 							logs, err = chain.chainInfo.RPC.GetLogs(rpcCtx, filter)
@@ -350,7 +366,7 @@ outer:
 
 							// Metrics to measure reorgs
 							p.metrics.IncReorgs(chain.chainInfo.ChainId)
-							
+
 							ancestor := p.handleReorg(ctx, chain)
 
 							chain.cursor = ancestor
@@ -521,9 +537,16 @@ func (p *Processor) fetchLogsFromReceipts(ctx context.Context, from uint64, to u
 
 		for _, receipt := range receipts {
 			for _, log := range receipt.Logs {
-				if p.matchesTopicFilter(log, chain) {
-					allLogs = append(allLogs, log)
+
+				if _, ok := chain.addressSet[utils.Normalize(log.Address)]; !ok {
+					continue
 				}
+
+				if !p.matchesTopicFilter(log, chain) {
+					continue
+				}
+
+				allLogs = append(allLogs, log)
 			}
 		}
 	}

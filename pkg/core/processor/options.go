@@ -1,6 +1,9 @@
 package processor
 
-import "github.com/ryuux05/godex/pkg/core/rpc"
+import (
+	"github.com/ryuux05/godex/pkg/core/rpc"
+	"github.com/ryuux05/godex/pkg/core/types"
+)
 
 type FetchMode string
 
@@ -44,6 +47,8 @@ type Options struct {
 	ReorgLookbackBlocks uint64
 	// Topics is the event for indexer to listen and get the log
 	Topics []string
+	// Addresses is a list of whitelisted addresses to filter
+	Addresses[]types.Address
 	// FetchMode determines which RPC method to use for fetching logs
 	// - "logs": Uses eth_getLogs (default, more efficient)
 	// - "receipts": Uses eth_getBlockReceipts (more reliable, higher bandwidth)

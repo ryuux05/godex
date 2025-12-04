@@ -59,3 +59,8 @@ func ConvertToTopics(signatures []string) []string {
 	
 	return topics
 }
+
+// Normalize converts address to lower case and trim the first two character "0x"
+func Normalize(address string) string {
+	return strings.ToLower(strings.TrimPrefix(address, "0x"))
+}

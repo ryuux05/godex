@@ -271,6 +271,7 @@ func(r *HTTPRPC) GetBlockReceipts(ctx context.Context, blockNumber string) ([]ty
 
 	var resp rpcResponse[[]types.Receipt]
 
+
 	if err := json.NewDecoder(res.Body).Decode(&resp); err != nil {
 		return []types.Receipt{}, fmt.Errorf("error reading response body: %w", err)
 	}
@@ -280,6 +281,8 @@ func(r *HTTPRPC) GetBlockReceipts(ctx context.Context, blockNumber string) ([]ty
 			Message: resp.Error.Message,
 		}
 	}
+
+	
 
 	return resp.Result, nil
 }
