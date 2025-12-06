@@ -186,6 +186,41 @@ func (s *PGSink) Rollback(ctx context.Context, chainId string, toBlock uint64) (
 	return nil
 }
 
+func (s *PGSink) LoadCursor(ctx context.Context, chainId string) (blockNum uint64, blockHash string, err error) {
+	tx, err := s.db.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return 0, "", fmt.Errorf("begin transaction: %w", err)
+	}
+	defer func() {
+		if err != nil {
+			_ = tx.Rollback(ctx)
+		}
+	}()
+
+	row := tx.QueryRow(ctx, `
+		SELECT block_num, block_hash
+		FROM chronicle_cursors
+		WHERE chain_id = $1;
+	`, chainId)
+
+	if err != nil {
+		return 0, "", fmt.Errorf("failed to load cursor from db: %w", err)
+	}
+
+	var blockNum_row uint64
+    var blockHash_row string
+
+	if err = row.Scan(&blockNum_row, &blockHash_row); err != nil {
+		 if err == pgx.ErrNoRows {
+            // No cursor stored yet → return starting point
+            return 0, "", nil
+        }
+		return 0, "", fmt.Errorf("failed to load cursor: %w", err)
+	}
+
+	return blockNum_row, blockHash_row, nil
+}
+
 func (s *PGSink) Migrate(ctx context.Context, sqlString string) error {
 	if sqlString == "" {
 		return fmt.Errorf("sql string cannot be empty")
