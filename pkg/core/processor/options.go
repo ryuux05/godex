@@ -10,6 +10,7 @@ type FetchMode string
 const (
 	FetchModeLogs     FetchMode = "logs"     // Use eth_getlogs for efficiency
 	FetchModeReceipts FetchMode = "receipts" // Use eth_getBlockReceipts for reliability
+	FetchModeHybrid   FetchMode = "hybrid" // Use eth_getlogs for historical sync and eth_getBlockReceipts for live sync
 )
 
 type Options struct {
@@ -33,7 +34,7 @@ type Options struct {
 	// Confimation is range of block to wait.
 	// Confirmation is used to avoid most reorgs.
 	// Eth PoS confirmation is around 5-15 for "safe"
-	Confimation uint64
+	ConfimationDepth uint64
 	// EnableTimestamps allow you to get timestamps for each event.
 	// Note that enabling this would cost additional call to the RPC.
 	// Default: false
@@ -48,11 +49,15 @@ type Options struct {
 	// Topics is the event for indexer to listen and get the log
 	Topics []string
 	// Addresses is a list of whitelisted addresses to filter
-	Addresses[]types.Address
+	Addresses []types.Address
 	// FetchMode determines which RPC method to use for fetching logs
 	// - "logs": Uses eth_getLogs (default, more efficient)
 	// - "receipts": Uses eth_getBlockReceipts (more reliable, higher bandwidth)
 	FetchMode FetchMode
+	// UseLogsForHistoricalSync determine whether to use eth_getlogs during historical sync
+	// Using eth_getlogs instead of eth_getBlockReceipts during historical sync can save up rpc cost
+	// Default: true
+	UseLogsForHistoricalSync bool
 	// RetryConfig manage how to handle retry on retriable errors.
 	// Use pointer since it nillable
 	// There is default settings
@@ -64,8 +69,7 @@ type ChainInfo struct {
 	// Convert to string incase of integer chain id
 	ChainId string
 	// Name of the chain
-	Name    string
+	Name string
 	// RPC information of the chain.
-	RPC     rpc.RPC
+	RPC rpc.RPC
 }
-

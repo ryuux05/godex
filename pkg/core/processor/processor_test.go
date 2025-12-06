@@ -17,6 +17,126 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
+func NewTestServer(t *testing.T) *httptest.Server {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+
+		var req struct {
+			Method string        `json:"method"`
+			Params []interface{} `json:"params"`
+			ID     interface{}   `json:"id"`
+		}
+
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		switch req.Method {
+		case "eth_blockNumber":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"jsonrpc": "2.0",
+				"id":      1,
+				"result":  "0x64",
+			})
+
+		case "eth_getBlockByNumber":
+			s := fmt.Sprintf("%s", req.Params[0])
+			blockNum, err := utils.HexQtyToUint64(s)
+			assert.NoError(t, err)
+
+
+			_ = json.NewEncoder(w).Encode(map[string]any {
+				"jsonrpc": "2.0",
+				"id":      1,
+				"result": map[string]any {
+					"Number": req.Params[0],
+					"Hash": req.Params[0],
+					"ParentHash": utils.Uint64ToHexQty(blockNum - 1), 
+					"Timestamp": fmt.Sprintf("%d",time.Now().Unix()),
+				},
+			})
+
+		case "eth_getLogs":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"jsonrpc": "2.0",
+				"id":      1,
+				"result": []map[string]any{
+					{
+						"Address":          "logaddress",
+						"Topics": []any{"0xddf252ad"},
+						"Data":             "0x",
+						"BlockNumber":      "0x1",
+						"TransactionHash":  "0xth1",
+						"TransactionIndex": "0",
+						"BlockHash":        "0xbh1",
+						"LogIndex":         "0x0",
+						"Removed":          false,
+					},
+				},
+			})
+
+		case "eth_getBlockReceipts":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"jsonrpc": "2.0",
+				"id":      1,
+				"result": []map[string]any{
+					// Receipt 1: Transaction with Transfer event log
+					{
+						"BlockHash":         "0xbh1",
+						"BlockNumber":       "0x1",
+						"ContractAddress":   nil,
+						"CumulativeGasUsed": "0x5208",
+						"EffectiveGasPrice": "0x3b9aca00",
+						"From":              "0xsender",
+						"GasUsed":           "0x5208",
+						"Logs": []map[string]any{
+							{
+								"Address":          "receiptaddress",
+								"Topics":           []any{"0xddf252ad"},
+								"Data":             "0x",
+								"BlockNumber":      "0x1",
+								"TransactionHash":  "0xth1",
+								"TransactionIndex": "0x0",
+								"BlockHash":        "0xbh1",
+								"LogIndex":         "0x0",
+								"Removed":          false,
+							},
+						},
+						"LogsBloom":        "0x00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+						"Status":           "0x1",
+						"To":               "0xabc",
+						"TransactionHash":  "0xth1",
+						"TransactionIndex": "0x0",
+						"Type":             "0x2",
+					},
+					// Receipt 2: Transaction with no logs
+					{
+						"BlockHash":         "0xbh1",
+						"BlockNumber":       "0x1",
+						"ContractAddress":   nil,
+						"CumulativeGasUsed": "0xa410",
+						"EffectiveGasPrice": "0x3b9aca00",
+						"From":              "0xsender2",
+						"GasUsed":           "0x5208",
+						"Logs":              []map[string]any{},
+						"LogsBloom":         "0x00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+						"Status":            "0x1",
+						"To":                "0xreceiver",
+						"TransactionHash":   "0xth2",
+						"TransactionIndex":  "0x1",
+						"Type":              "0x2",
+					},
+				},
+			})
+
+		default:
+			http.Error(w, "method no supported", http.StatusBadRequest)
+		}
+	}))
+	return srv
+}
+
 func TestRunWithOneLog_Success(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -146,7 +266,7 @@ func TestRunWithOneLog_Success(t *testing.T) {
 		DecoderConcurrency: 1,
 		FetcherConcurrency: 4,
 		StartBlock:         0,
-		Confimation:        0,
+		ConfimationDepth:        0,
 		LogsBufferSize:     1024,
 		FetchMode: FetchModeReceipts,
 	}
@@ -301,7 +421,7 @@ func TestRunWithMultipleLog_Success(t *testing.T) {
 		DecoderConcurrency: 2,
 		FetcherConcurrency: 4,
 		StartBlock:         0,
-		Confimation:        0,
+		ConfimationDepth:        0,
 		LogsBufferSize:     1024,
 	}
 	chain := ChainInfo{
@@ -446,7 +566,7 @@ func TestReorg_Success(t *testing.T) {
 		DecoderConcurrency: 2,
 		FetcherConcurrency: 4,
 		StartBlock:         0,
-		Confimation:        0,
+		ConfimationDepth:        0,
 		LogsBufferSize:     1024,
 	}
 	chain := ChainInfo{
@@ -590,7 +710,7 @@ func TestRunWithRetry_Success(t *testing.T) {
 		DecoderConcurrency: 1,
 		FetcherConcurrency: 1,
 		StartBlock:         0,
-		Confimation:        0,
+		ConfimationDepth:        0,
 		LogsBufferSize:     1024,
 		FetchMode: FetchModeLogs,
 		RetryConfig: &retryConfig,
@@ -722,7 +842,7 @@ func TestMultiChainRun_Success(t *testing.T) {
         RangeSize:          2,
         FetcherConcurrency: 1,
         StartBlock:         0,
-        Confimation:        0,
+        ConfimationDepth:        0,
         LogsBufferSize:     10,
         FetchMode:          FetchModeLogs,
         Topics:             []string{"Transfer(address,address,uint256)"},
@@ -738,7 +858,7 @@ func TestMultiChainRun_Success(t *testing.T) {
         RangeSize:          2,
         FetcherConcurrency: 1,
         StartBlock:         0,
-        Confimation:        0,
+        ConfimationDepth:        0,
         LogsBufferSize:     10,
         FetchMode:          FetchModeLogs,
         Topics:             []string{"Transfer(address,address,uint256)"},
@@ -894,7 +1014,7 @@ func TestMultiChain_IndependentErrors(t *testing.T) {
         RangeSize:          1,
         FetcherConcurrency: 1,
         StartBlock:         0,
-        Confimation:        0,
+        ConfimationDepth:        0,
         LogsBufferSize:     10,
         FetchMode:          FetchModeLogs,
         Topics:             []string{"0xddf252ad"},
@@ -905,7 +1025,7 @@ func TestMultiChain_IndependentErrors(t *testing.T) {
         RangeSize:          1,
         FetcherConcurrency: 1,
         StartBlock:         0,
-        Confimation:        0,
+        ConfimationDepth:        0,
         LogsBufferSize:     10,
         FetchMode:          FetchModeLogs,
         Topics:             []string{"0xddf252ad"},
@@ -1033,7 +1153,7 @@ func TestMultiChain_BothChainsSucceed(t *testing.T) {
         RangeSize:          1,
         FetcherConcurrency: 1,
         StartBlock:         0,
-        Confimation:        0,
+        ConfimationDepth:        0,
         LogsBufferSize:     10,
         FetchMode:          FetchModeLogs,
         Topics:             []string{"0xddf252ad"},
@@ -1122,3 +1242,52 @@ func TestMultiChain_AddChainWhileRunning(t *testing.T) {
     assert.Contains(t, err.Error(), "running")
 }
 
+func TestUseLogsForHistoricalSync_False(t *testing.T) {
+	processor := NewProcessor(nil)
+	srv := NewTestServer(t)
+
+	rpchttp := rpc.NewHTTPRPC(srv.URL, 0, 0) 
+
+	opts := &Options{
+        RangeSize:          1,
+        FetcherConcurrency: 1,
+        StartBlock:         0,
+        ConfimationDepth:        0,
+        LogsBufferSize:     10,
+        FetchMode:          FetchModeLogs,
+        Topics:             []string{"0xddf252ad"},
+        RetryConfig: &rpc.RetryConfig{
+            MaxAttempts:    3,
+            InitialBackoff: 10 * time.Millisecond,
+            MaxBackoff:     50 * time.Millisecond,
+        },
+    }
+    
+    processor.AddChain(ChainInfo{ChainId: "1", Name: "Eth", RPC: rpchttp}, opts)
+
+	ethCh, _ := processor.Logs("1")
+	ethLogs := []types.Log{}
+
+	 var mu sync.Mutex
+    
+    go func() {
+        for log := range ethCh {
+            mu.Lock()
+            ethLogs = append(ethLogs, log)
+            mu.Unlock()
+        }
+    }()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+    defer cancel()
+
+	go processor.Run(ctx)
+	time.Sleep(500 * time.Millisecond)
+    cancel()
+    time.Sleep(100 * time.Millisecond)
+	
+	mu.Lock()
+	logs := ethLogs[0]
+	mu.Unlock()
+	assert.Equal(t, "logaddress", logs.Address)
+	assert.NotEqual(t, "receiptaddress", logs.Address)
+}

@@ -37,6 +37,9 @@ type chainState struct {
 	addressSet map[string] struct{}
 	// List of whitelisted contract addresses
 	addresses []string
+	// State of the processor of each chain
+	// Is it syncing historical block or live block
+	isLive bool
 	// options for processor
 	opts *Options
 }
@@ -174,6 +177,14 @@ func (p *Processor) Logs(chainId string) (<-chan types.Log, error) {
 	return ch, nil
 }
 
+func (p *Processor) IsLive(chainId string) (bool, error) {
+	_, exists := p.logsCh[chainId]
+	if !exists {
+		return false, fmt.Errorf("chain %s not found", chainId)
+	}
+	return p.chains[chainId].isLive, nil
+}
+
 func (p *Processor) runChain(ctx context.Context, logsCh chan types.Log, chain *chainState) error {
 outer:
 	for {
@@ -200,8 +211,8 @@ outer:
 
 		// look for block confimation
 		var conf uint64
-		if chain.opts.Confimation > 0 {
-			conf = chain.opts.Confimation
+		if chain.opts.ConfimationDepth > 0 {
+			conf = chain.opts.ConfimationDepth
 		}
 
 		// Get the target block
@@ -210,20 +221,25 @@ outer:
 			target = head - conf
 		}
 
-		n := chain.opts.FetcherConcurrency
-		if n <= 0 {
-			n = 1
+		fetchWorker := chain.opts.FetcherConcurrency
+		if fetchWorker <= 0 {
+			fetchWorker = 1
+		}
+
+		// Check for live sync
+		if chain.cursor >= head - chain.opts.ConfimationDepth {
+			chain.isLive = true
 		}
 
 		// Metrics to measure processor concurrency count.
-		p.metrics.SetProcessorConcurrency(chain.chainInfo.ChainId, uint64(n))
+		p.metrics.SetProcessorConcurrency(chain.chainInfo.ChainId, uint64(fetchWorker))
 
 		// plan jobs
 		type blockRange struct {
 			from uint64
 			to   uint64
 		}
-		jobs := make(chan blockRange, n)
+		jobs := make(chan blockRange, fetchWorker)
 		go func() {
 			defer close(jobs)
 			rs := uint64(chain.opts.RangeSize)
@@ -245,7 +261,7 @@ outer:
 
 		// create waitgroup and make error channel
 		var wg sync.WaitGroup
-		wg.Add(n)
+		wg.Add(fetchWorker)
 		errCh := make(chan error, 1)
 
 		type doneMsg struct {
@@ -254,17 +270,24 @@ outer:
 			logs []types.Log
 		}
 
-		doneCh := make(chan doneMsg, n)
+		doneCh := make(chan doneMsg, fetchWorker)
 
-		for i := 0; i < n; i++ {
+		for i := 0; i < fetchWorker; i++ {
 			go func() {
 				defer wg.Done()
 				for job := range jobs {
 					var logs []types.Log
 					var err error
 					start := time.Now()
+
+					mode := chain.opts.FetchMode
+
+					if !chain.isLive && chain.opts.UseLogsForHistoricalSync {
+						mode = FetchModeLogs
+					}
+					// When the chain is live
 					err = rpc.RetryWithBackoff(rpcCtx, *chain.opts.RetryConfig, func() error {
-						switch chain.opts.FetchMode {
+						switch mode {
 						case FetchModeLogs:
 							filter := types.Filter{
 								FromBlock: utils.Uint64ToHexQty(job.from),
@@ -274,14 +297,16 @@ outer:
 							}
 							// Record fetch time
 							logs, err = chain.chainInfo.RPC.GetLogs(rpcCtx, filter)
-
+							
 						case FetchModeReceipts:
 							logs, err = p.fetchLogsFromReceipts(rpcCtx, job.from, job.to, chain)
+						case FetchModeHybrid:
+							
 						}
-
+						
 						return err
 					})
-
+					
 					p.metrics.ObservedBlockFetchDuration(chain.chainInfo.ChainId, time.Since(start), err == nil)
 					if err != nil {
 						log.Println("Error fetching logs: ", err)
@@ -299,8 +324,8 @@ outer:
 					case doneCh <- doneMsg{from: job.from, to: job.to, logs: logs}:
 						//log.Printf("sending log to arbiter from block %d to block %d...\n", job.from, job.to)
 					}
-
 				}
+
 			}()
 		}
 
