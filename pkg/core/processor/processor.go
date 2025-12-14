@@ -77,7 +77,7 @@ func NewProcessor(m metrics.Metrics, s sink.Sink) *Processor {
 		m = metrics.Noop{}
 	}
 	return &Processor{
-		chains:    make(map[string]*chainState),
+		chains: make(map[string]*chainState),
 		//logsCh:    make(map[string]chan types.Log),
 		metrics:   m,
 		sink:      s,
@@ -332,9 +332,10 @@ outer:
 		errCh := make(chan error, 1)
 
 		type doneMsg struct {
-			from uint64
-			to   uint64
-			logs []types.Log
+			from       uint64
+			to         uint64
+			logs       []types.Log
+			timestamps map[uint64]uint64 // blockNumber -> timestamp (only if EnableTimestamps)
 		}
 
 		doneCh := make(chan doneMsg, fetchWorker)
@@ -383,12 +384,73 @@ outer:
 							return
 						}
 					}
-					//log.Printf("Here")
+
+					// Fetch timestamps if enabled
+					var timestamps map[uint64]uint64
+					if chain.opts.EnableTimestamps && len(logs) > 0 {
+						// Collect unique block numbers
+						uniqueBlocks := make(map[uint64]struct{})
+						for _, l := range logs {
+							bn, err := utils.HexQtyToUint64(l.BlockNumber)
+							if err != nil {
+								log.Printf("Failed to parse block number %s: %v", l.BlockNumber, err)
+								continue
+							}
+							uniqueBlocks[bn] = struct{}{}
+						}
+
+						// Convert to slice for batch request
+						blockNumbers := make([]string, 0, len(uniqueBlocks))
+						for bn := range uniqueBlocks {
+							blockNumbers = append(blockNumbers, utils.Uint64ToHexQty(bn))
+						}
+
+						// Try batch fetch first, fall back to individual calls
+						timestamps = make(map[uint64]uint64)
+						blocks, err := chain.chainInfo.RPC.GetBlocks(rpcCtx, blockNumbers)
+						if err != nil {
+							log.Printf("Batch GetBlocks failed, falling back to individual calls: %v", err)
+							// Fall back to individual GetBlock calls
+							for _, hexBn := range blockNumbers {
+								bn, err := utils.HexQtyToUint64(hexBn)
+								if err != nil {
+									log.Printf("Failed to parse block number %s: %v", hexBn, err)
+									continue
+								}
+								block, err := chain.chainInfo.RPC.GetBlock(rpcCtx, hexBn)
+								if err != nil {
+									log.Printf("Failed to fetch block %s: %v", hexBn, err)
+									continue
+								}
+								ts, err := utils.HexQtyToUint64(block.Timestamp)
+								if err != nil {
+									log.Printf("Failed to parse timestamp for block %s: %v", hexBn, err)
+									continue
+								}
+								timestamps[bn] = ts
+							}
+						} else {
+							// Process batch results
+							for hexBn, blk := range blocks {
+								bn, err := utils.HexQtyToUint64(hexBn)
+								if err != nil {
+									log.Printf("Failed to parse block number %s: %v", hexBn, err)
+									continue
+								}
+								ts, err := utils.HexQtyToUint64(blk.Timestamp)
+								if err != nil {
+									log.Printf("Failed to parse timestamp for block %d: %v", bn, err)
+									continue
+								}
+								timestamps[bn] = ts
+							}
+						}
+					}
+
 					select {
 					case <-rpcCtx.Done():
 						return
-					case doneCh <- doneMsg{from: job.from, to: job.to, logs: logs}:
-						//log.Printf("sending log to arbiter from block %d to block %d...\n", job.from, job.to)
+					case doneCh <- doneMsg{from: job.from, to: job.to, logs: logs, timestamps: timestamps}:
 					}
 				}
 
@@ -409,6 +471,7 @@ outer:
 			defer close(arbiterDone)
 			window := make(map[uint64]uint64)
 			windowLogs := make(map[uint64][]types.Log)
+			windowTimestamps := make(map[uint64]map[uint64]uint64) // from -> (blockNum -> timestamp)
 			next := chain.cursor.BlockNum + 1
 
 			for {
@@ -422,6 +485,9 @@ outer:
 
 					window[dm.from] = dm.to
 					windowLogs[dm.from] = dm.logs
+					if dm.timestamps != nil {
+						windowTimestamps[dm.from] = dm.timestamps
+					}
 
 					for end, ok2 := window[next]; ok2; end, ok2 = window[next] {
 
@@ -473,15 +539,25 @@ outer:
 							// Decode logs to events and store to sink
 							if logs := windowLogs[next]; len(logs) > 0 {
 								events := make([]types.Event, 0, len(logs))
-								
+								timestamps := windowTimestamps[next] // Get timestamps for this window
+
 								dec := p.decoder[chain.chainInfo.ChainId]
 								for _, l := range logs {
-									event, err := dec.Decode(l)
+									event, err := dec.Decode(chain.chainInfo.Name, chain.chainInfo.ChainId, l)
 									if err != nil {
 										log.Printf("Failed to decode log: %v", err)
 										continue
 									}
 									if event != nil {
+										// Apply timestamp if enabled and available
+										if chain.opts.EnableTimestamps && timestamps != nil {
+											bn, err := utils.HexQtyToUint64(l.BlockNumber)
+											if err != nil {
+												log.Printf("Failed to parse block number for timestamp: %v", err)
+											} else {
+												event.Timestamp = timestamps[bn]
+											}
+										}
 										events = append(events, *event)
 									}
 								}
@@ -500,13 +576,14 @@ outer:
 							}
 
 							delete(windowLogs, next)
+							delete(windowTimestamps, next)
 							delete(window, next)
 							chain.cursor.BlockNum = end
 							next = end + 1
 
 							lag := head - chain.cursor.BlockNum
 							p.metrics.ObservedBlockLag(chain.chainInfo.ChainId, lag)
-						
+
 						}
 
 						// Get the end block blockhash after committing

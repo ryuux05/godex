@@ -1,9 +1,11 @@
 package processor
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"net/http/httptest"
@@ -151,7 +153,7 @@ type MockDecoder struct {
 	mu          sync.Mutex
 }
 
-func (m *MockDecoder) Decode(log types.Log) (*types.Event, error) {
+func (m *MockDecoder) Decode(name string, chainId string, log types.Log) (*types.Event, error) {
 	m.mu.Lock()
 	m.DecodeCount++
 	m.mu.Unlock()
@@ -173,7 +175,7 @@ func (m *MockDecoder) Decode(log types.Log) (*types.Event, error) {
 func (m *MockDecoder) DecodeBatch(logs []types.Log) (*[]types.Event, error) {
 	events := make([]types.Event, 0, len(logs))
 	for _, l := range logs {
-		e, err := m.Decode(l)
+		e, err := m.Decode("", "", l)
 		if err != nil {
 			continue
 		}
@@ -432,14 +434,14 @@ func TestRunWithOneLog_Success(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	opts := Options{
-		RangeSize:          10,
-		BatchSize:          50,
+		RangeSize: 10,
+		BatchSize: 50,
 
 		FetcherConcurrency: 4,
 		StartBlock:         0,
 		ConfimationDepth:   0,
 
-		FetchMode:          FetchModeReceipts,
+		FetchMode: FetchModeReceipts,
 	}
 	chain := ChainInfo{
 		ChainId: "592",
@@ -584,7 +586,6 @@ func TestRunWithMultipleLog_Success(t *testing.T) {
 		FetcherConcurrency: 4,
 		StartBlock:         0,
 		ConfimationDepth:   0,
-
 	}
 	chain := ChainInfo{
 		ChainId: "592",
@@ -704,13 +705,12 @@ func TestReorg_Success(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	opts := Options{
-		RangeSize:          10,
-		BatchSize:          50,
+		RangeSize: 10,
+		BatchSize: 50,
 
 		FetcherConcurrency: 4,
 		StartBlock:         0,
 		ConfimationDepth:   0,
-
 	}
 	chain := ChainInfo{
 		ChainId: "592",
@@ -833,15 +833,15 @@ func TestRunWithRetry_Success(t *testing.T) {
 	}
 
 	opts := Options{
-		RangeSize:          1,
-		BatchSize:          50,
+		RangeSize: 1,
+		BatchSize: 50,
 
 		FetcherConcurrency: 1,
 		StartBlock:         0,
 		ConfimationDepth:   0,
 
-		FetchMode:          FetchModeLogs,
-		RetryConfig:        &retryConfig,
+		FetchMode:   FetchModeLogs,
+		RetryConfig: &retryConfig,
 	}
 	chain := ChainInfo{
 		ChainId: "592",
@@ -1781,4 +1781,187 @@ func TestSinkStoreError_HandledGracefully(t *testing.T) {
 	// Should return error from store failure
 	t.Logf("Run returned: %v", runErr)
 	// The error behavior depends on your implementation
+}
+
+func TestRun_WithEnableTimestamps(t *testing.T) {
+	mockSink := &MockSink{}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+
+		// Read body once
+		bodyBytes, _ := io.ReadAll(r.Body)
+
+		// Try batch request first (GetBlocks sends array)
+		var batchReq []map[string]interface{}
+		if err := json.NewDecoder(bytes.NewReader(bodyBytes)).Decode(&batchReq); err == nil && len(batchReq) > 0 {
+			// Return batch response for GetBlocks
+			responses := make([]map[string]any, len(batchReq))
+			for i, req := range batchReq {
+				// Get the block number from params
+				blockNum := "0x1"
+				if params, ok := req["params"].([]interface{}); ok && len(params) > 0 {
+					if bn, ok := params[0].(string); ok {
+						blockNum = bn
+					}
+				}
+
+				// Get the ID from request
+				id := i
+				if reqId, ok := req["id"].(float64); ok {
+					id = int(reqId)
+				}
+
+				// Assign timestamp based on actual block number
+				timestamp := "0x6553f100" // 1700000000 for block 0x1
+				if blockNum == "0x2" {
+					timestamp = "0x6553f10c" // 1700000012 for block 0x2
+				}
+
+				responses[i] = map[string]any{
+					"jsonrpc": "2.0",
+					"id":      id,
+					"result": map[string]any{
+						"number":     blockNum,
+						"hash":       "0xblock" + blockNum[2:],
+						"parentHash": "0x0",
+						"timestamp":  timestamp,
+					},
+				}
+			}
+			_ = json.NewEncoder(w).Encode(responses)
+			return
+		}
+
+		// Single request
+		var req struct {
+			Method string        `json:"method"`
+			Params []interface{} `json:"params"`
+			ID     interface{}   `json:"id"`
+		}
+		if err := json.NewDecoder(bytes.NewReader(bodyBytes)).Decode(&req); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		switch req.Method {
+		case "eth_blockNumber":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"jsonrpc": "2.0",
+				"id":      1,
+				"result":  "0x5",
+			})
+
+		case "eth_getLogs":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"jsonrpc": "2.0",
+				"id":      1,
+				"result": []map[string]any{
+					{
+						"address":          "0xabc",
+						"topics":           []any{"0xddf252ad"},
+						"data":             "0x",
+						"blockNumber":      "0x1",
+						"transactionHash":  "0x123",
+						"transactionIndex": "0x0",
+						"blockHash":        "0xblock1",
+						"logIndex":         "0x0",
+						"removed":          false,
+					},
+					{
+						"address":          "0xabc",
+						"topics":           []any{"0xddf252ad"},
+						"data":             "0x",
+						"blockNumber":      "0x2",
+						"transactionHash":  "0x456",
+						"transactionIndex": "0x0",
+						"blockHash":        "0xblock2",
+						"logIndex":         "0x0",
+						"removed":          false,
+					},
+				},
+			})
+
+		case "eth_getBlockByNumber":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"jsonrpc": "2.0",
+				"id":      1,
+				"result": map[string]any{
+					"number":     "0x1",
+					"hash":       "0xblock1",
+					"parentHash": "0x0",
+					"timestamp":  "0x65f5a000",
+				},
+			})
+
+		default:
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"jsonrpc": "2.0",
+				"id":      1,
+				"result":  "0x0",
+			})
+		}
+	}))
+	defer srv.Close()
+
+	rpcClient := rpc.NewHTTPRPC(srv.URL, 0, 0)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	opts := &Options{
+		RangeSize:          10,
+		FetcherConcurrency: 1,
+		StartBlock:         0,
+		ConfimationDepth:   0,
+		FetchMode:          FetchModeLogs,
+		EnableTimestamps:   true,
+	}
+
+	mockDecoder := &MockDecoder{
+		DecodeFn: func(log types.Log) (*types.Event, error) {
+			return &types.Event{
+				Id:              "test-event-" + log.TransactionHash,
+				ChainId:         "1",
+				EventType:       "Transfer",
+				BlockNumber:     1,
+				BlockHash:       log.BlockHash,
+				TransactionHash: log.TransactionHash,
+				Address:         log.Address,
+			}, nil
+		},
+	}
+
+	processor := NewProcessor(nil, mockSink)
+	err := processor.AddChain(ChainInfo{
+		ChainId: "1",
+		Name:    "Ethereum",
+		RPC:     rpcClient,
+	}, opts, mockDecoder)
+	assert.NoError(t, err)
+
+	done := make(chan error, 1)
+	go func() {
+		done <- processor.Run(ctx)
+	}()
+
+	// Wait for events to be processed
+	mockSink.WaitForEvents(ctx, 2)
+	cancel()
+	<-done
+
+	events := mockSink.GetAllEvents()
+	assert.Len(t, events, 2)
+
+	// Check that timestamps were set
+	for _, event := range events {
+		assert.Greater(t, event.Timestamp, uint64(0), "Event should have timestamp set")
+	}
+
+	// Verify specific timestamps
+	event1 := events[0]
+	event2 := events[1]
+
+	assert.Equal(t, uint64(1700000000), event1.Timestamp) // 0x65f5a000
+	assert.Equal(t, uint64(1700000012), event2.Timestamp) // 0x65f5a00c
 }

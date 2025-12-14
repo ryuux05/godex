@@ -225,11 +225,15 @@ func(r *HTTPRPC) GetBlocks(ctx context.Context, blockNumbers []string) (map[stri
 
     // Map results back to block numbers
 	blocks := make(map[string]types.Block, len(blockNumbers))
-	for i, res := range resp {
+	for _, res := range resp {
 		if res.Error != nil {
 			continue
 		}
-		blocks[blockNumbers[i]] = res.Result 
+		// Use ID to get the correct block number
+		idx := int(res.ID)
+		if idx >= 0 && idx < len(blockNumbers) {
+			blocks[blockNumbers[idx]] = res.Result
+		}
 	}
 	
 	return blocks, nil

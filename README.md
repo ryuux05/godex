@@ -1,14 +1,16 @@
-# indexer-sdk-go
+# godex
 
-A high-performance blockchain indexing SDK written in Go, designed for building robust indexers that process EVM-compatible blockchain events with automatic reorg handling, multi-chain support, and flexible event decoding.
+A high-performance blockchain indexing SDK written in Go, designed for building robust indexers that process EVM-compatible blockchain events with automatic reorg handling, multi-chain support, and persistent storage.
 
 ## Features
 
 - **Multi-Chain Support**: Index events across multiple EVM-compatible chains simultaneously
 - **Automatic Reorg Handling**: Built-in detection and rollback for blockchain reorganizations
-- **Flexible Event Decoding**: Register multiple ABIs with named identifiers for explicit event decoding
-- **High Performance**: Concurrent fetching and processing with configurable worker pools
-- **Production Ready**: Comprehensive error handling, retry mechanisms, and state management
+- **Integrated Sink Storage**: Events are automatically decoded and stored to your configured sink
+- **Flexible Event Decoding**: Custom decoders transform raw logs into structured events
+- **High Performance**: Concurrent fetching with configurable worker pools and batch RPC requests
+- **Optional Timestamps**: Fetch block timestamps for events with a single config flag
+- **Production Ready**: Comprehensive error handling, retry mechanisms, and metrics support
 
 ## Installation
 
@@ -29,43 +31,52 @@ import (
     
     "github.com/ryuux05/godex/pkg/core"
     "github.com/ryuux05/godex/pkg/core/decoder"
+    "github.com/ryuux05/godex/adapters/sink/postgres"
 )
 
 func main() {
-    // Initialize RPC client
-    rpc := core.NewHTTPRPC("https://eth-mainnet.g.alchemy.com/v2/YOUR_KEY", 20)
+    // Initialize RPC client (endpoint, rateLimit, burstLimit)
+    rpc := core.NewHTTPRPC("https://eth-mainnet.g.alchemy.com/v2/YOUR_KEY", 20, 5)
     
-    // Configure processor options
-    opts := core.Options{
-        RangeSize:          100,
-        BatchSize:          50,
-        DecoderConcurrency: 4,
-        FetcherConcurrency: 4,
-        StartBlock:         18000000,
-        Confimation:        15,
-        LogsBufferSize:     1024,
-        Topics: []string{
-            "Transfer(address,address,uint256)",
-        },
-        FetchMode: core.FetchModeReceipts,
+    // Initialize sink (e.g., PostgreSQL)
+    sink, err := postgres.NewPostgresSink(context.Background(), "postgres://...")
+    if err != nil {
+        log.Fatal(err)
     }
     
-    // Setup chain
+    // Configure processor options
+    opts := &core.Options{
+        RangeSize:          100,
+        FetcherConcurrency: 4,
+        StartBlock:         18000000,
+        ConfimationDepth:   15,
+        EnableTimestamps:   true,
+        Topics: []string{
+            "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef", // Transfer
+        },
+        FetchMode: core.FetchModeLogs,
+    }
+    
+    // Setup chain info
     chain := core.ChainInfo{
         ChainId: "1",
         Name:    "Ethereum",
         RPC:     rpc,
     }
     
-    // Initialize decoder and register ABIs
-    decoder := decoder.NewStandardDecoder()
-    decoder.RegisterABI("ERC20", erc20ABI)
+    // Initialize decoder
+    dec := decoder.NewStandardDecoder()
+    dec.RegisterABI("ERC20", erc20ABI)
     
-    // Create processor
-    processor := core.NewProcessor()
-    processor.AddChain(chain, &opts)
+    // Create processor with metrics (optional) and sink
+    processor := core.NewProcessor(nil, sink)
     
-    // Start indexing
+    // Add chain with options and decoder
+    if err := processor.AddChain(chain, opts, dec); err != nil {
+        log.Fatal(err)
+    }
+    
+    // Start indexing - events are automatically decoded and stored to sink
     ctx := context.Background()
     if err := processor.Run(ctx); err != nil {
         log.Fatal(err)
@@ -73,50 +84,10 @@ func main() {
 }
 ```
 
-### Event Decoding
-
-```go
-// Register multiple ABIs with identifiers
-decoder := decoder.NewStandardDecoder()
-decoder.RegisterABI("ERC20", erc20TransferABI)
-decoder.RegisterABI("ERC721", erc721TransferABI)
-
-// Get logs from processor
-logsCh, err := processor.Logs(chain.ChainId)
-if err != nil {
-    log.Fatal(err)
-}
-
-// Process logs
-for log := range logsCh {
-    // Select ABI based on log structure
-    var event *types.Event
-    if len(log.Topics) == 3 {
-        event, err = decoder.Decode("ERC20", log)
-    } else if len(log.Topics) == 4 {
-        event, err = decoder.Decode("ERC721", log)
-    }
-    
-    if err != nil {
-        log.Printf("Error decoding: %v", err)
-        continue
-    }
-    
-    if event != nil {
-        // Access decoded event fields
-        from := event.Fields["from"].(string)
-        to := event.Fields["to"].(string)
-        value := event.Fields["value"].(*big.Int)
-        
-        log.Printf("Transfer: %s -> %s, value: %s", from, to, value.String())
-    }
-}
-```
-
 ### Multi-Chain Indexing
 
 ```go
-processor := core.NewProcessor()
+processor := core.NewProcessor(nil, sink)
 
 // Add Ethereum chain
 ethereumChain := core.ChainInfo{
@@ -124,7 +95,7 @@ ethereumChain := core.ChainInfo{
     Name:    "Ethereum",
     RPC:     ethereumRPC,
 }
-processor.AddChain(ethereumChain, &ethereumOpts)
+processor.AddChain(ethereumChain, ethereumOpts, ethereumDecoder)
 
 // Add Polygon chain
 polygonChain := core.ChainInfo{
@@ -132,7 +103,7 @@ polygonChain := core.ChainInfo{
     Name:    "Polygon",
     RPC:     polygonRPC,
 }
-processor.AddChain(polygonChain, &polygonOpts)
+processor.AddChain(polygonChain, polygonOpts, polygonDecoder)
 
 // Run all chains concurrently
 processor.Run(ctx)
@@ -142,59 +113,149 @@ processor.Run(ctx)
 
 ### Processor Options
 
-- `RangeSize`: Number of blocks to fetch per batch
-- `BatchSize`: Number of logs to process per batch
-- `DecoderConcurrency`: Number of concurrent decoder workers
-- `FetcherConcurrency`: Number of concurrent RPC fetchers
-- `StartBlock`: Initial block number to start indexing
-- `Confimation`: Number of confirmations required before processing
-- `LogsBufferSize`: Buffer size for log channel
-- `Topics`: Event signatures to filter (supports function signatures or topic hashes)
-- `FetchMode`: Log fetching strategy (`FetchModeLogs` or `FetchModeReceipts`)
+| Option | Description |
+|--------|-------------|
+| `RangeSize` | Number of blocks to fetch per batch |
+| `BatchSize` | Number of events to buffer before writing to sink |
+| `FetcherConcurrency` | Number of concurrent RPC fetchers |
+| `StartBlock` | Initial block number to start indexing |
+| `EndBlock` | Optional block to stop indexing at (0 = run continuously) |
+| `ConfimationDepth` | Number of confirmations before processing (avoids most reorgs) |
+| `EnableTimestamps` | Fetch and attach block timestamps to events |
+| `ReorgLookbackBlocks` | Maximum blocks to walk back when detecting reorgs (default: 64) |
+| `Topics` | Event topic hashes to filter |
+| `Addresses` | Contract addresses to filter |
+| `FetchMode` | `FetchModeLogs` or `FetchModeReceipts` |
+| `UseLogsForHistoricalSync` | Use eth_getLogs during historical sync (default: true) |
+| `RetryConfig` | Configure retry behavior for RPC errors |
 
 ### RPC Configuration
 
 ```go
+// NewHTTPRPC(endpoint, rateLimit, burstLimit)
 rpc := core.NewHTTPRPC(
     "https://your-rpc-endpoint.com",
-    20, // Rate limit (requests per second)
+    20,  // Rate limit (requests per second)
+    5,   // Burst limit (max concurrent requests)
 )
 ```
 
 ## Architecture
 
-The SDK consists of three main components:
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                         Processor                               │
+│  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────────────┐ │
+│  │ Fetcher  │──│ Arbiter  │──│ Decoder  │──│      Sink        │ │
+│  │ (RPC)    │  │ (Order)  │  │ (Events) │  │ (Postgres, etc.) │ │
+│  └──────────┘  └──────────┘  └──────────┘  └──────────────────┘ │
+└─────────────────────────────────────────────────────────────────┘
+```
 
-### Processor
+### Components
 
-The Processor manages block fetching, log retrieval, and reorg detection. It coordinates multiple workers to fetch logs concurrently while maintaining ordered processing through an arbiter pattern.
+| Component | Description |
+|-----------|-------------|
+| **Processor** | Orchestrates block fetching, log retrieval, and reorg detection |
+| **Fetcher** | Concurrent workers that fetch logs from RPC (with optional timestamp fetching) |
+| **Arbiter** | Ensures ordered processing and coordinates decode → store flow |
+| **Decoder** | Transforms raw blockchain logs into structured events |
+| **Sink** | Persists events to storage (PostgreSQL, etc.) |
 
-### Decoder
+## Interfaces
 
-The Decoder transforms raw blockchain logs into structured events. It supports registering multiple ABIs with named identifiers, allowing explicit selection of which ABI to use for decoding.
+### Sink Interface
 
-### RPC Client
+```go
+type Sink interface {
+    // Store persists events
+    Store(ctx context.Context, events []types.Event) error
+    // Rollback removes events from a block number onwards (for reorg handling)
+    Rollback(ctx context.Context, chainId string, toBlock uint64) error
+    // LoadCursor retrieves the last processed block for resumption
+    LoadCursor(ctx context.Context, chainId string) (blockNum uint64, blockHash string, err error)
+}
+```
 
-The RPC client handles communication with blockchain nodes, including automatic retry logic, rate limiting, and error handling.
+### Decoder Interface
+
+```go
+type Decoder interface {
+    // Decode transforms a log into a structured event
+    Decode(name string, chainId string, log types.Log) (*types.Event, error)
+    // DecodeBatch for batch decoding
+    DecodeBatch(logs []types.Log) (*[]types.Event, error)
+}
+```
+
+### RPC Interface
+
+```go
+type RPC interface {
+    Head(ctx context.Context) (string, error)
+    GetBlock(ctx context.Context, blockNumber string) (types.Block, error)
+    GetBlocks(ctx context.Context, blockNumbers []string) (map[string]types.Block, error)
+    GetLogs(ctx context.Context, filter types.Filter) ([]types.Log, error)
+    GetBlockReceipts(ctx context.Context, blockNumber string) ([]types.Receipt, error)
+}
+```
 
 ## Reorg Handling
 
-The SDK automatically detects blockchain reorganizations by comparing parent block hashes. When a reorg is detected:
+The SDK automatically detects blockchain reorganizations by comparing parent block hashes:
 
-1. The processor identifies the common ancestor block
-2. Rolls back any processed state beyond the ancestor
-3. Restarts indexing from the ancestor block
+1. Detects chain divergence via parent hash mismatch
+2. Walks back to find the common ancestor block
+3. Calls `Sink.Rollback()` to remove orphaned data
+4. Resumes indexing from the ancestor block
 
-This ensures data consistency even during chain reorganizations.
+## Metrics
 
-## Error Handling
+Optional metrics interface for observability:
 
-The decoder is designed to be resilient. It returns `nil, nil` for logs that cannot be decoded (structure mismatches, missing data, etc.), allowing the indexer to continue processing. Only configuration errors (such as ABI not found) return actual errors.
+```go
+type Metrics interface {
+    IncBlocksProcessed(chain string)
+    ObservedBlockLag(chain string, lag float64)
+    ObservedBlockFetchDuration(chain string, d float64)
+    SetIndexedHeight(chain string, h float64)
+    IncSinkWrites(chain string)
+    SetProcessorConcurrency(chain string, v float64)
+    IncSinkErrors(chain string)
+    ObservedSinkWriteDuration(chain string, d float64)
+    IncReorgs(chain string)
+}
+```
+
+A Prometheus adapter is available at `adapters/metrics/prometheus.go`.
+
+## Adapters
+
+### PostgreSQL Sink
+
+```go
+import "github.com/ryuux05/godex/adapters/sink/postgres"
+
+sink, err := postgres.NewPostgresSink(ctx, connectionString)
+```
+
+### Prometheus Metrics
+
+```go
+import "github.com/ryuux05/godex/adapters/metrics"
+
+m := metrics.NewPrometheusMetrics()
+processor := core.NewProcessor(m, sink)
+```
 
 ## Performance Considerations
 
-- Use appropriate `FetcherConcurrency` and `DecoderConcurrency` values based on your RPC rate limits
+- Use appropriate `FetcherConcurrency` based on your RPC rate limits
 - Adjust `RangeSize` to balance between RPC call frequency and memory usage
 - Use `FetchModeReceipts` for better performance when filtering by contract addresses
-- Monitor log channel buffer size to prevent blocking
+- Enable `UseLogsForHistoricalSync` to reduce RPC costs during historical sync
+- `GetBlocks` uses JSON-RPC batch requests to optimize timestamp fetching
 
+## License
+
+See [LICENSE](LICENSE) file.
