@@ -25,8 +25,6 @@ type HTTPRPC struct{
 	limiter *rate.Limiter
 }
 
-
-
 // Response type for rpc
 type rpcResponse[T any] struct {
 	JSONRPC string `json:"jsonrpc"`
@@ -113,6 +111,7 @@ func(r *HTTPRPC) Head(ctx context.Context) (string, error) {
 }
 
 // GetBlock returns the block header for now (second params is set to false)
+// parameter: context, block number in hex format
 func(r *HTTPRPC) GetBlock(ctx context.Context, blockNumber string) (types.Block, error) {
 	if r.limiter != nil {
 		if err := r.limiter.Wait(ctx); err != nil {
@@ -171,6 +170,70 @@ func(r *HTTPRPC) GetBlock(ctx context.Context, blockNumber string) (types.Block,
 	}
 
 	return resp.Result, nil
+}
+
+func(r *HTTPRPC) GetBlocks(ctx context.Context, blockNumbers []string) (map[string]types.Block, error) {
+	if len(blockNumbers) == 0 {
+        return make(map[string]types.Block), nil
+    }
+
+    if r.limiter != nil {
+        if err := r.limiter.Wait(ctx); err != nil {
+            return nil, err
+        }
+    }
+
+	// make batch request
+	body := make([]map[string]interface{}, len(blockNumbers))
+	for i, n := range blockNumbers {
+		body[i] = map[string]interface{}{
+			"jsonrpc": "2.0",
+			"id":      i,
+			"method":  "eth_getBlockByNumber",
+			"params":  []interface{}{n, false},
+		}
+	}
+
+	b, err := json.Marshal(body)
+	if err != nil {
+        return nil, fmt.Errorf("error marshaling batch: %w", err)
+    }
+
+	req, err := http.NewRequestWithContext(ctx, "POST", r.endpoint, bytes.NewReader(b))
+    if err != nil {
+        return nil, fmt.Errorf("error creating http request: %w", err)
+    }
+	req.Header.Set("Content-Type", "application/json")
+
+	res, err := r.client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("error fetching rpc: %w", err)				
+	}
+	defer res.Body.Close()
+
+	if res.StatusCode != http.StatusOK {
+		return nil, &errors.HTTPError{
+			StatusCode: res.StatusCode,
+			Message: res.Status,
+		}
+	}
+
+	var resp []rpcResponse[types.Block]
+    if err := json.NewDecoder(res.Body).Decode(&resp); err != nil {
+        return nil, fmt.Errorf("error reading response body: %w", err)
+    }
+
+    // Map results back to block numbers
+	blocks := make(map[string]types.Block, len(blockNumbers))
+	for i, res := range resp {
+		if res.Error != nil {
+			continue
+		}
+		blocks[blockNumbers[i]] = res.Result 
+	}
+	
+	return blocks, nil
+
 }
 
 func(r *HTTPRPC) GetLogs(ctx context.Context, filter types.Filter) ([]types.Log, error) {

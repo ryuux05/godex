@@ -56,3 +56,7 @@ func IsRetryableError(err error) bool {
 
 	return false
 }
+
+// ErrCursorNotFound is returned when a cursor does not exist for a chain.
+// This is expected for clean databases starting fresh.
+var ErrCursorNotFound = errors.New("cursor not found")

@@ -14,6 +14,9 @@ type RPC interface {
 	// Get block for current block number
 	GetBlock(ctx context.Context, blockNumber string) (types.Block, error)
 
+	// Batch get multiple blocks
+	GetBlocks(ctx context.Context, blockNumbers []string) (map[string]types.Block, error)
+	
 	// Fetch logs over a range with filter
 	GetLogs(ctx context.Context, filter types.Filter) ([]types.Log, error)
 

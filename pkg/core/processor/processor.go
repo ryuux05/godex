@@ -2,17 +2,20 @@ package processor
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"sync"
 	"time"
 
+	"github.com/ryuux05/godex/pkg/core/decoder"
+	coreerrors "github.com/ryuux05/godex/pkg/core/errors"
 	"github.com/ryuux05/godex/pkg/core/metrics"
 	"github.com/ryuux05/godex/pkg/core/rpc"
+	"github.com/ryuux05/godex/pkg/core/sink"
 	"github.com/ryuux05/godex/pkg/core/types"
 	"github.com/ryuux05/godex/pkg/core/utils"
 
-	//"github.com/ryuux05/godex/pkg/core/sink"
 	"golang.org/x/sync/errgroup"
 )
 
@@ -20,8 +23,11 @@ type chainState struct {
 	// chainInfo stores chain information where the indexer going to query
 	// Specify RPC (endpoint and rate-limit)
 	chainInfo ChainInfo
-	// cursor is a pointer that points the current block where the indexer is pointing
-	cursor uint64
+	// Cursor used when there is cursor state in persistance storage
+	// If Cursor exists, processor will ignore StartBlock and use
+	// Cursor.BlockNum instead.
+	// Existing cursor also means that the processor are resuming the indexing process
+	cursor *cursorState
 	// FIFO of endHeights in commit order
 	windowOrder []uint64
 	// Store block hash to compare the next block parent hash.
@@ -34,12 +40,13 @@ type chainState struct {
 	// Storage to store the formatted topics
 	topics []string
 	// Map of whitelisted contract for processor to queue
-	addressSet map[string] struct{}
+	addressSet map[string]struct{}
 	// List of whitelisted contract addresses
 	addresses []string
 	// State of the processor of each chain
 	// Is it syncing historical block or live block
 	isLive bool
+
 	// options for processor
 	opts *Options
 }
@@ -50,29 +57,83 @@ type Processor struct {
 	chains map[string]*chainState
 	// logsChan is a channel where processor will store the indexed logs
 	// It's a map with chainId as key.
-	logsCh map[string]chan types.Log
+	//logsCh map[string]chan types.Log
 	// isRunning track the processor state if it's running or stopped.
 	// False by default until the processor run.
 	isRunning bool
 	// Mutex to access data safely
 	mu sync.RWMutex
-	//
+	// metrics
 	metrics metrics.Metrics
+	// Sink is a persistance storage
+	sink sink.Sink
+	// Decoder is used to decode log to a human readable event
+	// Each chain are able to to have different decoder
+	decoder map[string]decoder.Decoder
 }
 
-func NewProcessor(m metrics.Metrics) *Processor {
+func NewProcessor(m metrics.Metrics, s sink.Sink) *Processor {
 	if m == nil {
 		m = metrics.Noop{}
 	}
 	return &Processor{
 		chains:    make(map[string]*chainState),
-		logsCh:    make(map[string]chan types.Log),
+		//logsCh:    make(map[string]chan types.Log),
 		metrics:   m,
+		sink:      s,
+		decoder:   make(map[string]decoder.Decoder),
 		isRunning: false,
 	}
 }
 
-func (p *Processor) AddChain(chain ChainInfo, opts *Options) error {
+func (p *Processor) AddChain(chain ChainInfo, opts *Options, decoder decoder.Decoder) error {
+	blockNum, blockHash, err := p.sink.LoadCursor(context.Background(), chain.ChainId)
+	if err != nil {
+		// If cursor not found (clean db), start from block 0
+		if errors.Is(err, coreerrors.ErrCursorNotFound) {
+			blockNum = 0
+			blockHash = ""
+		} else {
+			return fmt.Errorf("failed to load cursor: %w", err)
+		}
+	}
+
+	if blockNum <= 0 {
+		blockNum = 0
+	}
+
+	return p.addChain(chain, opts, blockNum, blockHash, decoder)
+}
+
+func (p *Processor) GetChain(chainId string) ChainInfo {
+	return p.chains[chainId].chainInfo
+}
+
+func (p *Processor) Run(ctx context.Context) error {
+	p.isRunning = true
+	defer func() { p.isRunning = false }()
+
+	g := errgroup.Group{}
+	for chainId, chain := range p.chains {
+		id := chainId
+		c := chain
+		//ch := p.logsCh[id]
+
+		g.Go(func() error {
+			err := p.runChain(ctx, c)
+			if err != nil {
+				log.Printf("Chain %s stopped: %v", id, err)
+				// Error logged but doesn't stop other chains
+			}
+			return err
+		})
+
+	}
+
+	return g.Wait()
+}
+
+func (p *Processor) addChain(chain ChainInfo, opts *Options, blockNum uint64, blockHash string, decoder decoder.Decoder) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
@@ -80,10 +141,18 @@ func (p *Processor) AddChain(chain ChainInfo, opts *Options) error {
 		return fmt.Errorf("cannot add chain while processor is running")
 	}
 
-	cursor := opts.StartBlock
-	if cursor == 0 {
-		cursor = 0
+	startBlock := opts.StartBlock
+	if startBlock <= 0 {
+		startBlock = 0
 	}
+
+	var cursor *cursorState = &cursorState{}
+	if blockNum != 0 && blockHash != "" {
+		if blockNum > startBlock {
+			cursor.BlockNum = blockNum
+		}
+	}
+	cursor.BlockHash = blockHash
 
 	// Clamp the max storedwindowhash bound.
 	rs := uint64(opts.RangeSize)                     // assume >0
@@ -128,67 +197,60 @@ func (p *Processor) AddChain(chain ChainInfo, opts *Options) error {
 		hardFallbackBlocks:  1000,
 		topics:              topics,
 		addresses:           addresses,
-		addressSet: addressSet,
+		addressSet:          addressSet,
 	}
 
 	p.chains[chain.ChainId] = chainState
-	p.logsCh[chain.ChainId] = make(chan types.Log, opts.LogsBufferSize)
+	//p.logsCh[chain.ChainId] = make(chan types.Log, opts.LogsBufferSize)
+	p.decoder[chain.ChainId] = decoder
 
 	return nil
 }
 
-func (p *Processor) GetChain(chainId string) ChainInfo {
-	return p.chains[chainId].chainInfo
-}
-
-func (p *Processor) Run(ctx context.Context) error {
-	p.isRunning = true
-	defer func() { p.isRunning = false }()
-
-	g := errgroup.Group{}
-	for chainId, chain := range p.chains {
-		id := chainId
-		c := chain
-		ch := p.logsCh[id]
-
-		g.Go(func() error {
-			err := p.runChain(ctx, ch, c)
-			if err != nil {
-				log.Printf("Chain %s stopped: %v", id, err)
-				// Error logged but doesn't stop other chains
-			}
-			return err
-		})
-
-	}
-
-	return g.Wait()
-}
-
 // return the read-only channel
-func (p *Processor) Logs(chainId string) (<-chan types.Log, error) {
-	p.mu.RLock()
-	defer p.mu.RUnlock()
+// func (p *Processor) Logs(chainId string) (<-chan types.Log, error) {
+// 	p.mu.RLock()
+// 	defer p.mu.RUnlock()
 
-	ch, exists := p.logsCh[chainId]
-	if !exists {
-		return nil, fmt.Errorf("chain %s not found", chainId)
-	}
-	return ch, nil
-}
+// 	ch, exists := p.logsCh[chainId]
+// 	if !exists {
+// 		return nil, fmt.Errorf("chain %s not found", chainId)
+// 	}
+// 	return ch, nil
+// }
 
 func (p *Processor) IsLive(chainId string) (bool, error) {
-	_, exists := p.logsCh[chainId]
+	_, exists := p.chains[chainId]
 	if !exists {
 		return false, fmt.Errorf("chain %s not found", chainId)
 	}
 	return p.chains[chainId].isLive, nil
 }
 
-func (p *Processor) runChain(ctx context.Context, logsCh chan types.Log, chain *chainState) error {
+func (p *Processor) runChain(ctx context.Context, chain *chainState) error {
 outer:
 	for {
 		rpcCtx, rpcCancel := context.WithCancel(ctx)
+
+		// Check for processor continuation.
+		if chain.cursor.BlockNum > 0 && chain.cursor.BlockHash != "" {
+			err := rpc.RetryWithBackoff(rpcCtx, *chain.opts.RetryConfig, func() error {
+				var err error
+				var b types.Block
+				blockNum := utils.Uint64ToHexQty(chain.cursor.BlockNum)
+				b, err = chain.chainInfo.RPC.GetBlock(rpcCtx, blockNum)
+				if b.Hash != chain.cursor.BlockHash {
+					p.handleReorg(rpcCtx, chain)
+				}
+
+				return err
+			})
+
+			if err != nil {
+				rpcCancel()
+				return err
+			}
+		}
 
 		// compute for new head
 		var headHex string
@@ -227,8 +289,13 @@ outer:
 		}
 
 		// Check for live sync
-		if chain.cursor >= head - chain.opts.ConfimationDepth {
+		if chain.cursor.BlockNum >= head-chain.opts.ConfimationDepth {
 			chain.isLive = true
+		}
+
+		// Also when blocknum exceed head we need to bring it back to confirmation level
+		if chain.cursor.BlockNum > head {
+			chain.cursor.BlockNum = head - chain.opts.ConfimationDepth
 		}
 
 		// Metrics to measure processor concurrency count.
@@ -244,7 +311,7 @@ outer:
 			defer close(jobs)
 			rs := uint64(chain.opts.RangeSize)
 
-			for from := chain.cursor + 1; from <= target; from += rs {
+			for from := chain.cursor.BlockNum + 1; from <= target; from += rs {
 				to := from + rs - 1
 				if to > target {
 					to = target
@@ -297,16 +364,15 @@ outer:
 							}
 							// Record fetch time
 							logs, err = chain.chainInfo.RPC.GetLogs(rpcCtx, filter)
-							
+
 						case FetchModeReceipts:
 							logs, err = p.fetchLogsFromReceipts(rpcCtx, job.from, job.to, chain)
-						case FetchModeHybrid:
-							
+
 						}
-						
+
 						return err
 					})
-					
+
 					p.metrics.ObservedBlockFetchDuration(chain.chainInfo.ChainId, time.Since(start), err == nil)
 					if err != nil {
 						log.Println("Error fetching logs: ", err)
@@ -343,7 +409,7 @@ outer:
 			defer close(arbiterDone)
 			window := make(map[uint64]uint64)
 			windowLogs := make(map[uint64][]types.Log)
-			next := chain.cursor + 1
+			next := chain.cursor.BlockNum + 1
 
 			for {
 				select {
@@ -394,32 +460,53 @@ outer:
 
 							ancestor := p.handleReorg(ctx, chain)
 
-							chain.cursor = ancestor
+							// Rollback sink to ancestor
+							if err := p.sink.Rollback(rpcCtx, chain.chainInfo.ChainId, ancestor); err != nil {
+								log.Printf("Failed to rollback sink: %v", err)
+							}
+
+							chain.cursor.BlockNum = ancestor
 							return
 
 						} else {
 							log.Printf("Processed log from block %d to block %d...\n", next, end)
-							// Commit logs to log channel
+							// Decode logs to events and store to sink
 							if logs := windowLogs[next]; len(logs) > 0 {
+								events := make([]types.Event, 0, len(logs))
+								
+								dec := p.decoder[chain.chainInfo.ChainId]
 								for _, l := range logs {
-									select {
-									case <-rpcCtx.Done():
+									event, err := dec.Decode(l)
+									if err != nil {
+										log.Printf("Failed to decode log: %v", err)
+										continue
+									}
+									if event != nil {
+										events = append(events, *event)
+									}
+								}
+
+								// Store events to sink
+								if len(events) > 0 {
+									if err := p.sink.Store(rpcCtx, events); err != nil {
+										log.Printf("Failed to store events: %v", err)
+										select {
+										case errCh <- err:
+										default:
+										}
 										return
-									case logsCh <- l:
 									}
 								}
 							}
 
 							delete(windowLogs, next)
 							delete(window, next)
-							chain.cursor = end
+							chain.cursor.BlockNum = end
 							next = end + 1
 
-							lag := head - chain.cursor
+							lag := head - chain.cursor.BlockNum
 							p.metrics.ObservedBlockLag(chain.chainInfo.ChainId, lag)
-
-							// Set metrics for indexed height
-							p.metrics.SetIndexedHeight(chain.chainInfo.ChainId, chain.cursor)
+						
 						}
 
 						// Get the end block blockhash after committing
@@ -475,10 +562,10 @@ outer:
 
 // During ancestor lookup we start from the cursor window and get to the window head and compare to the previous window
 func (p *Processor) handleReorg(ctx context.Context, chain *chainState) uint64 {
-	ancestor := chain.cursor
+	ancestor := chain.cursor.BlockNum
 	for i := uint64(0); i < chain.storedWindowHashCap; i++ {
 
-		fallback := chain.cursor
+		fallback := chain.cursor.BlockNum
 		if fallback > chain.hardFallbackBlocks {
 			fallback -= chain.hardFallbackBlocks
 		} else {
@@ -508,7 +595,7 @@ func (p *Processor) handleReorg(ctx context.Context, chain *chainState) uint64 {
 		default:
 		}
 	}
-	fallback := chain.cursor
+	fallback := chain.cursor.BlockNum
 	if fallback > chain.hardFallbackBlocks {
 		fallback -= chain.hardFallbackBlocks
 	} else {
@@ -518,6 +605,25 @@ func (p *Processor) handleReorg(ctx context.Context, chain *chainState) uint64 {
 	if fallback <= 0 {
 		fallback = 0
 	}
+	p.dropWindowHash(fallback, chain)
+	return fallback
+}
+
+// During processor continuation startup and reorg happened we need to do hardfallback.
+// Since we dont have storedwindowhash to check.
+func (p *Processor) handleStartupReorg(ctx context.Context, chain *chainState) uint64 {
+	fallback := chain.cursor.BlockNum
+	if fallback > chain.hardFallbackBlocks {
+		fallback -= chain.hardFallbackBlocks
+	} else {
+		fallback = 0
+	}
+
+	log.Println("Hard fallback triggered...")
+	if fallback <= 0 {
+		fallback = 0
+	}
+
 	p.dropWindowHash(fallback, chain)
 	return fallback
 }

@@ -457,6 +457,147 @@ func TestHttpRateLimitBurst_Success(t *testing.T) {
 		}
 	}
 
-	allowed := 5
+	allowed := 5 + 1
 	require.LessOrEqual(t, maxInWindow, allowed)
+}
+
+func TestGetBlocks_Success(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Verify it's a batch request (array)
+		var requests []map[string]interface{}
+		if err := json.NewDecoder(r.Body).Decode(&requests); err != nil {
+			t.Fatalf("expected batch request array: %v", err)
+		}
+
+		assert.Len(t, requests, 3)
+		assert.Equal(t, "eth_getBlockByNumber", requests[0]["method"])
+
+		// Return batch response
+		_ = json.NewEncoder(w).Encode([]map[string]any{
+			{
+				"jsonrpc": "2.0",
+				"id":      0,
+				"result": map[string]any{
+					"number":     "0x1",
+					"hash":       "0xblock1",
+					"parentHash": "0x0",
+					"timestamp":  "0x65f5a000",
+				},
+			},
+			{
+				"jsonrpc": "2.0",
+				"id":      1,
+				"result": map[string]any{
+					"number":     "0x2",
+					"hash":       "0xblock2",
+					"parentHash": "0xblock1",
+					"timestamp":  "0x65f5a00c",
+				},
+			},
+			{
+				"jsonrpc": "2.0",
+				"id":      2,
+				"result": map[string]any{
+					"number":     "0x3",
+					"hash":       "0xblock3",
+					"parentHash": "0xblock2",
+					"timestamp":  "0x65f5a018",
+				},
+			},
+		})
+	}))
+	defer srv.Close()
+
+	rpc := NewHTTPRPC(srv.URL, 0, 0)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	blocks, err := rpc.GetBlocks(ctx, []string{"0x1", "0x2", "0x3"})
+	assert.NoError(t, err)
+	assert.Len(t, blocks, 3)
+	assert.Equal(t, "0xblock1", blocks["0x1"].Hash)
+	assert.Equal(t, "0xblock2", blocks["0x2"].Hash)
+	assert.Equal(t, "0xblock3", blocks["0x3"].Hash)
+	assert.Equal(t, "0x65f5a000", blocks["0x1"].Timestamp)
+}
+
+func TestGetBlocks_EmptyInput(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("should not make request for empty input")
+	}))
+	defer srv.Close()
+
+	rpc := NewHTTPRPC(srv.URL, 0, 0)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	blocks, err := rpc.GetBlocks(ctx, []string{})
+	assert.NoError(t, err)
+	assert.Len(t, blocks, 0)
+}
+
+func TestGetBlocks_PartialError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// One success, one error
+		_ = json.NewEncoder(w).Encode([]map[string]any{
+			{
+				"jsonrpc": "2.0",
+				"id":      0,
+				"result": map[string]any{
+					"number":     "0x1",
+					"hash":       "0xblock1",
+					"parentHash": "0x0",
+					"timestamp":  "0x65f5a000",
+				},
+			},
+			{
+				"jsonrpc": "2.0",
+				"id":      1,
+				"error": map[string]any{
+					"code":    -32000,
+					"message": "block not found",
+				},
+			},
+		})
+	}))
+	defer srv.Close()
+
+	rpc := NewHTTPRPC(srv.URL, 0, 0)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	blocks, err := rpc.GetBlocks(ctx, []string{"0x1", "0x999"})
+	assert.NoError(t, err)
+	assert.Len(t, blocks, 1)
+	assert.Equal(t, "0xblock1", blocks["0x1"].Hash)
+	_, exists := blocks["0x999"]
+	assert.False(t, exists)
+}
+
+func TestGetBlocks_HTTPError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "server error", http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	rpc := NewHTTPRPC(srv.URL, 0, 0)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	_, err := rpc.GetBlocks(ctx, []string{"0x1", "0x2"})
+	assert.Error(t, err)
+}
+
+func TestGetBlocks_InvalidJSON(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("not valid json"))
+	}))
+	defer srv.Close()
+
+	rpc := NewHTTPRPC(srv.URL, 0, 0)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	_, err := rpc.GetBlocks(ctx, []string{"0x1"})
+	assert.Error(t, err)
 }

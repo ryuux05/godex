@@ -21,7 +21,8 @@ type Options struct {
 	RangeSize int
 	// DecoderConcurrency spawns number of goroutine for decoder
 	// Set to 1 for strictly serial processing.
-	DecoderConcurrency int
+	//DecoderConcurrency int
+
 	// FetcherConcurrency spwawns number of goroutine for fetcher.
 	// Set 1 for strictly serial fetching.
 	FetcherConcurrency int
@@ -42,7 +43,8 @@ type Options struct {
 	// How many Log items can be buffered in the processor’s logs channel.
 	// 0 makes it unbuffered.
 	// use a sane default (e.g., 1024).
-	LogsBufferSize uint64
+	//LogsBufferSize uint64
+	
 	// ReorgLookbackBlocks is the maximum number of blocks to walk back when detecting a reorg. Used to bound header lookups and the size of stored window hashes.
 	// Default: 64 (good starting point)
 	ReorgLookbackBlocks uint64
@@ -62,6 +64,13 @@ type Options struct {
 	// Use pointer since it nillable
 	// There is default settings
 	RetryConfig *rpc.RetryConfig
+}
+
+type cursorState struct {
+	// BlockNum is cursor block number stored inside persistant storage
+	BlockNum uint64
+	// BlockNum is cursor block number stored inside persistant storage
+	BlockHash string
 }
 
 type ChainInfo struct {
