@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"sync"
 	"time"
 
@@ -53,6 +53,7 @@ type Processor struct {
 	// logsChan is a channel where processor will store the indexed logs
 	// It's a map with chainId as key.
 	//logsCh map[string]chan types.Log
+
 	// isRunning track the processor state if it's running or stopped.
 	// False by default until the processor run.
 	isRunning bool
@@ -65,6 +66,8 @@ type Processor struct {
 	// Decoder is used to decode log to a human readable event
 	// Each chain are able to to have different decoder
 	decoder map[string]decoder.Decoder
+	// logger is for strucutured logging
+	logger *slog.Logger
 }
 
 func NewProcessor(m metrics.Metrics, s sink.Sink) *Processor {
@@ -77,6 +80,7 @@ func NewProcessor(m metrics.Metrics, s sink.Sink) *Processor {
 		metrics:   m,
 		sink:      s,
 		decoder:   make(map[string]decoder.Decoder),
+		logger:    slog.Default(),
 		isRunning: false,
 	}
 }
@@ -100,6 +104,10 @@ func (p *Processor) AddChain(chain ChainInfo, opts *Options, decoder decoder.Dec
 	return p.addChain(chain, opts, blockNum, blockHash, decoder)
 }
 
+func (p *Processor) SetLogger(l *slog.Logger) {
+	p.logger = l
+}
+
 func (p *Processor) GetChain(chainId string) ChainInfo {
 	return p.chains[chainId].chainInfo
 }
@@ -117,8 +125,7 @@ func (p *Processor) Run(ctx context.Context) error {
 		g.Go(func() error {
 			err := p.runChain(ctx, c)
 			if err != nil {
-				log.Printf("Chain %s stopped: %v", id, err)
-				// Error logged but doesn't stop other chains
+				p.logger.Error("chain stopped", slog.String("chain_id", id), slog.Any("error", err))
 			}
 			return err
 		})
@@ -184,14 +191,14 @@ func (p *Processor) addChain(chain ChainInfo, opts *Options, blockNum uint64, bl
 	}
 
 	chainState := &chainState{
-		chainInfo:           chain,
-		opts:                opts,
-		cursor:              cursor,
-		blockHashCache: NewBlockHashCache(int(cap)),
-		hardFallbackBlocks:  1000,
-		topics:              topics,
-		addresses:           addresses,
-		addressSet:          addressSet,
+		chainInfo:          chain,
+		opts:               opts,
+		cursor:             cursor,
+		blockHashCache:     NewBlockHashCache(int(cap)),
+		hardFallbackBlocks: 1000,
+		topics:             topics,
+		addresses:          addresses,
+		addressSet:         addressSet,
 	}
 
 	p.chains[chain.ChainId] = chainState
@@ -260,7 +267,7 @@ outer:
 
 		head, err := utils.HexQtyToUint64(headHex)
 		if err != nil {
-			log.Println("Error in converting hex to uint64", err)
+			p.logger.Error("failed to convert hex to uint64", slog.Any("error", err))
 			rpcCancel()
 			return err
 		}
@@ -370,7 +377,7 @@ outer:
 
 					p.metrics.ObservedBlockFetchDuration(chain.chainInfo.ChainId, time.Since(start), err == nil)
 					if err != nil {
-						log.Println("Error fetching logs: ", err)
+						p.logger.Error("failed to fetch logs", slog.String("chain_id", chain.chainInfo.ChainId), slog.Any("error", err))
 						select {
 						case errCh <- err:
 							return
@@ -387,7 +394,7 @@ outer:
 						for _, l := range logs {
 							bn, err := utils.HexQtyToUint64(l.BlockNumber)
 							if err != nil {
-								log.Printf("Failed to parse block number %s: %v", l.BlockNumber, err)
+								p.logger.Warn("failed to parse block number", slog.String("block_number", l.BlockNumber), slog.Any("error", err))
 								continue
 							}
 							uniqueBlocks[bn] = struct{}{}
@@ -403,22 +410,22 @@ outer:
 						timestamps = make(map[uint64]uint64)
 						blocks, err := chain.chainInfo.RPC.GetBlocks(rpcCtx, blockNumbers)
 						if err != nil {
-							log.Printf("Batch GetBlocks failed, falling back to individual calls: %v", err)
+							p.logger.Warn("batch GetBlocks failed, falling back to individual calls", slog.Any("error", err))
 							// Fall back to individual GetBlock calls
 							for _, hexBn := range blockNumbers {
 								bn, err := utils.HexQtyToUint64(hexBn)
 								if err != nil {
-									log.Printf("Failed to parse block number %s: %v", hexBn, err)
+									p.logger.Warn("failed to parse block number", slog.String("block_number", hexBn), slog.Any("error", err))
 									continue
 								}
 								block, err := chain.chainInfo.RPC.GetBlock(rpcCtx, hexBn)
 								if err != nil {
-									log.Printf("Failed to fetch block %s: %v", hexBn, err)
+									p.logger.Warn("failed to fetch block", slog.String("block_number", hexBn), slog.Any("error", err))
 									continue
 								}
 								ts, err := utils.HexQtyToUint64(block.Timestamp)
 								if err != nil {
-									log.Printf("Failed to parse timestamp for block %s: %v", hexBn, err)
+									p.logger.Warn("failed to parse timestamp", slog.String("block_number", hexBn), slog.Any("error", err))
 									continue
 								}
 								timestamps[bn] = ts
@@ -428,12 +435,12 @@ outer:
 							for hexBn, blk := range blocks {
 								bn, err := utils.HexQtyToUint64(hexBn)
 								if err != nil {
-									log.Printf("Failed to parse block number %s: %v", hexBn, err)
+									p.logger.Warn("failed to parse block number", slog.String("block_number", hexBn), slog.Any("error", err))
 									continue
 								}
 								ts, err := utils.HexQtyToUint64(blk.Timestamp)
 								if err != nil {
-									log.Printf("Failed to parse timestamp for block %d: %v", bn, err)
+									p.logger.Warn("failed to parse timestamp", slog.Uint64("block_number", bn), slog.Any("error", err))
 									continue
 								}
 								timestamps[bn] = ts
@@ -510,9 +517,9 @@ outer:
 						}
 
 						//Compare to parents
-						parent, ok := chain.blockHashCache.Get(next-1)
+						parent, ok := chain.blockHashCache.Get(next - 1)
 						if ok && block.ParentHash != parent {
-							log.Println("Hash mismatch, reorg happened...")
+							p.logger.Warn("hash mismatch, reorg detected", slog.String("chain_id", chain.chainInfo.ChainId), slog.Uint64("block", next))
 							rpcCancel()
 
 							// Metrics to measure reorgs
@@ -522,14 +529,14 @@ outer:
 
 							// Rollback sink to ancestor
 							if err := p.sink.Rollback(rpcCtx, chain.chainInfo.ChainId, ancestor); err != nil {
-								log.Printf("Failed to rollback sink: %v", err)
+								p.logger.Error("failed to rollback sink", slog.String("chain_id", chain.chainInfo.ChainId), slog.Any("error", err))
 							}
 
 							chain.cursor.BlockNum = ancestor
 							return
 
 						} else {
-							log.Printf("Processed log from block %d to block %d...\n", next, end)
+							p.logger.Debug("processed block range", slog.String("chain_id", chain.chainInfo.ChainId), slog.Uint64("from", next), slog.Uint64("to", end))
 							// Decode logs to events and store to sink
 							if logs := windowLogs[next]; len(logs) > 0 {
 								events := make([]types.Event, 0, len(logs))
@@ -539,7 +546,7 @@ outer:
 								for _, l := range logs {
 									event, err := dec.Decode(chain.chainInfo.Name, chain.chainInfo.ChainId, l)
 									if err != nil {
-										log.Printf("Failed to decode log: %v", err)
+										p.logger.Warn("failed to decode log", slog.String("chain_id", chain.chainInfo.ChainId), slog.Any("error", err))
 										continue
 									}
 									if event != nil {
@@ -547,7 +554,7 @@ outer:
 										if chain.opts.EnableTimestamps && timestamps != nil {
 											bn, err := utils.HexQtyToUint64(l.BlockNumber)
 											if err != nil {
-												log.Printf("Failed to parse block number for timestamp: %v", err)
+												p.logger.Warn("failed to parse block number for timestamp", slog.Any("error", err))
 											} else {
 												event.Timestamp = timestamps[bn]
 											}
@@ -559,7 +566,7 @@ outer:
 								// Store events to sink
 								if len(events) > 0 {
 									if err := p.sink.Store(rpcCtx, events); err != nil {
-										log.Printf("Failed to store events: %v", err)
+										p.logger.Error("failed to store events", slog.String("chain_id", chain.chainInfo.ChainId), slog.Any("error", err))
 										select {
 										case errCh <- err:
 										default:
@@ -590,7 +597,7 @@ outer:
 							if rpcCtx.Err() != nil {
 								return
 							} // batch was canceled; ignore
-							log.Println("Error getting window end block: ", err)
+							p.logger.Error("failed to get window end block", slog.String("chain_id", chain.chainInfo.ChainId), slog.Any("error", err))
 							select {
 							case errCh <- err:
 							default:
@@ -615,7 +622,7 @@ outer:
 				<-arbiterDone
 				continue outer
 			case err := <-errCh:
-				log.Println("Error received cancelling context")
+				p.logger.Error("error received, cancelling context", slog.Any("error", err))
 				rpcCancel()
 				<-done
 				<-arbiterDone
@@ -657,13 +664,13 @@ func (p *Processor) handleReorg(ctx context.Context, chain *chainState) uint64 {
 			} else {
 				fallback = 0
 			}
-			log.Println("Cache miss during reorg, hard fallback triggered...")
+			p.logger.Warn("cache miss during reorg, hard fallback triggered", slog.String("chain_id", chain.chainInfo.ChainId), slog.Uint64("fallback_block", fallback))
 			chain.blockHashCache.DropAfter(fallback)
 			return fallback
 		}
 		if windowHeadBlock.ParentHash == ancestorHash {
 			chain.blockHashCache.DropAfter(ancestor)
-			log.Println("Found ancestor: ", ancestor)
+			p.logger.Info("found reorg ancestor", slog.String("chain_id", chain.chainInfo.ChainId), slog.Uint64("ancestor_block", ancestor))
 			return ancestor
 		}
 
@@ -685,7 +692,7 @@ func (p *Processor) handleReorg(ctx context.Context, chain *chainState) uint64 {
 	} else {
 		fallback = 0
 	}
-	log.Println("Hard fallback triggered...")
+	p.logger.Warn("hard fallback triggered", slog.String("chain_id", chain.chainInfo.ChainId), slog.Uint64("fallback_block", fallback))
 	if fallback <= 0 {
 		fallback = 0
 	}
@@ -703,7 +710,7 @@ func (p *Processor) handleStartupReorg(ctx context.Context, chain *chainState) u
 		fallback = 0
 	}
 
-	log.Println("Hard fallback triggered...")
+	p.logger.Warn("startup hard fallback triggered", slog.String("chain_id", chain.chainInfo.ChainId), slog.Uint64("fallback_block", fallback))
 	if fallback <= 0 {
 		fallback = 0
 	}
