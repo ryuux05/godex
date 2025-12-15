@@ -982,7 +982,7 @@ func TestMultiChainRun_Success(t *testing.T) {
 
 	// Add Polygon chain
 	polyOpts := &Options{
-		RangeSize:          2,
+	RangeSize:          2,
 		FetcherConcurrency: 1,
 		StartBlock:         0,
 		ConfimationDepth:   0,

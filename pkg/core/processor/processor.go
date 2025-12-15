@@ -28,13 +28,8 @@ type chainState struct {
 	// Cursor.BlockNum instead.
 	// Existing cursor also means that the processor are resuming the indexing process
 	cursor *cursorState
-	// FIFO of endHeights in commit order
-	windowOrder []uint64
-	// Store block hash to compare the next block parent hash.
-	// We need this in order to detect reorg happening.
-	storedWindowHash map[uint64]string
-	// Number that bound how many hash could be store in storedWindowHash
-	storedWindowHashCap uint64
+	// LRU cache to store block hash to compare the next block parent hash
+	blockHashCache *BlockHashCache
 	// The number of block that we will fall back to in case we couldnt resolve reorg
 	hardFallbackBlocks uint64
 	// Storage to store the formatted topics
@@ -192,8 +187,7 @@ func (p *Processor) addChain(chain ChainInfo, opts *Options, blockNum uint64, bl
 		chainInfo:           chain,
 		opts:                opts,
 		cursor:              cursor,
-		storedWindowHashCap: cap,
-		storedWindowHash:    make(map[uint64]string, cap),
+		blockHashCache: NewBlockHashCache(int(cap)),
 		hardFallbackBlocks:  1000,
 		topics:              topics,
 		addresses:           addresses,
@@ -516,7 +510,7 @@ outer:
 						}
 
 						//Compare to parents
-						parent, ok := chain.storedWindowHash[next-1]
+						parent, ok := chain.blockHashCache.Get(next-1)
 						if ok && block.ParentHash != parent {
 							log.Println("Hash mismatch, reorg happened...")
 							rpcCancel()
@@ -604,7 +598,7 @@ outer:
 							return
 						}
 
-						p.storeWindowHash(end, block.Hash, chain)
+						chain.blockHashCache.Set(end, block.Hash)
 					}
 				}
 			}
@@ -640,7 +634,7 @@ outer:
 // During ancestor lookup we start from the cursor window and get to the window head and compare to the previous window
 func (p *Processor) handleReorg(ctx context.Context, chain *chainState) uint64 {
 	ancestor := chain.cursor.BlockNum
-	for i := uint64(0); i < chain.storedWindowHashCap; i++ {
+	for i := uint64(0); i < uint64(chain.blockHashCache.capacity); i++ {
 
 		fallback := chain.cursor.BlockNum
 		if fallback > chain.hardFallbackBlocks {
@@ -654,8 +648,21 @@ func (p *Processor) handleReorg(ctx context.Context, chain *chainState) uint64 {
 			return fallback
 		}
 
-		if windowHeadBlock.ParentHash == chain.storedWindowHash[ancestor] {
-			p.dropWindowHash(ancestor, chain)
+		ancestorHash, e := chain.blockHashCache.Get(ancestor)
+		if !e {
+			// hardfallback if ancestor didnt exists
+			fallback := chain.cursor.BlockNum
+			if fallback > chain.hardFallbackBlocks {
+				fallback -= chain.hardFallbackBlocks
+			} else {
+				fallback = 0
+			}
+			log.Println("Cache miss during reorg, hard fallback triggered...")
+			chain.blockHashCache.DropAfter(fallback)
+			return fallback
+		}
+		if windowHeadBlock.ParentHash == ancestorHash {
+			chain.blockHashCache.DropAfter(ancestor)
 			log.Println("Found ancestor: ", ancestor)
 			return ancestor
 		}
@@ -682,7 +689,7 @@ func (p *Processor) handleReorg(ctx context.Context, chain *chainState) uint64 {
 	if fallback <= 0 {
 		fallback = 0
 	}
-	p.dropWindowHash(fallback, chain)
+	chain.blockHashCache.DropAfter(fallback)
 	return fallback
 }
 
@@ -701,36 +708,8 @@ func (p *Processor) handleStartupReorg(ctx context.Context, chain *chainState) u
 		fallback = 0
 	}
 
-	p.dropWindowHash(fallback, chain)
+	chain.blockHashCache.DropAfter(fallback)
 	return fallback
-}
-
-func (p *Processor) storeWindowHash(to uint64, blockHash string, chain *chainState) {
-	_, exist := chain.storedWindowHash[to]
-	if exist {
-		chain.storedWindowHash[to] = blockHash
-	} else {
-		l := len(chain.windowOrder)
-		if uint64(l) >= chain.storedWindowHashCap {
-			old := chain.windowOrder[0]
-			delete(chain.storedWindowHash, old)
-			chain.windowOrder = chain.windowOrder[1:]
-		}
-
-		chain.storedWindowHash[to] = blockHash
-		chain.windowOrder = append(chain.windowOrder, to)
-	}
-}
-
-func (p *Processor) dropWindowHash(after uint64, chain *chainState) {
-	// walk tail backward removing entries > after
-	i := len(chain.windowOrder) - 1
-	for i >= 0 && chain.windowOrder[i] > after {
-		delete(chain.storedWindowHash, chain.windowOrder[i])
-		i--
-	}
-
-	chain.windowOrder = chain.windowOrder[:i+1]
 }
 
 // Helper function to get logs from receipts
