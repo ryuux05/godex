@@ -1,126 +1,116 @@
-## Processor Flow (HTTP, EVM)
+## Processor Architecture
 
-1) Load cursor:
-- Initialize from stored state or `Options.StartBlock`. Internally keep as uint64 for math.
+The Processor implements a concurrent producer-consumer pattern with built-in reorganization handling, designed for high-throughput EVM-compatible blockchain indexing.
 
-2) Determine safe target:
-- Call `Head(ctx)` → parse hex to uint64.
-- Compute `target = max(0, head − Options.Confirmations)`. Exit early if `cursor >= target`.
+### Core Components
 
-3) Build topics filter:
-- Use configured topics from `Options.Topics` (supports both function signatures and direct hashes).
-- Function signatures are automatically converted to Keccak256 hashes.
+**Producer Layer (Fetchers)**:
+- Concurrent workers fetch logs and timestamps using batch RPC requests
+- Rate-limited and retry-enabled communication with blockchain nodes
+- Bounded buffering prevents memory exhaustion
 
-4) Plan ranges:
-- Split `[cursor+1 .. target]` into windows of `Options.RangeSize`.
+**Consumer Layer (Arbiter)**:
+- Single-threaded coordinator ensures ordered processing
+- LRU cache maintains block hash history for reorg detection
+- Direct integration with decoder and sink for atomic event processing
 
-5) Concurrent fetching (worker pool):
-- Run up to `Options.FetcherConcurrency` workers.
-- Each worker:
-  - Receives block ranges from a jobs channel.
-  - Creates filter with `FromBlock`/`ToBlock` (hex-quantity strings) and configured topics.
-  - Calls `GetLogs(ctx, filter)` to fetch raw logs.
-  - Sends results to arbiter via `doneCh` (does NOT commit or process logs).
+**State Management**:
+- Per-chain cursor tracking with persistent storage
+- Window-based processing with configurable batch sizes
+- Automatic rollback on reorganization detection
 
-6) Arbiter-based ordered commit:
-- Single arbiter goroutine handles all log processing and commitment.
-- Maintains `next = cursor+1` and tracks finished windows in maps:
-  - `window[from] = to` - tracks completed ranges
-  - `windowLogs[from] = []Log` - stores logs for each range
-- **Sequential processing**: Only processes contiguous windows starting from `next`.
-- For each ready window:
-  a) **Reorg detection**: Fetch block header and verify parent hash continuity.
-  b) **Log commitment**: Send logs to output channel (`p.logsCh`) in order.
-  c) **Cursor advancement**: Update `cursor = end` and `next = end + 1`.
-  d) **Hash storage**: Store window end block hash for future reorg detection.
+### Processing Flow
 
-7) Reorg handling:
+1) **Initialization**:
+   - Load cursor from sink or use `StartBlock`
+   - Validate chain configuration and decoder registration
 
-### Reorg Strategy (HTTP-only, window-based)
+2) **Head Determination**:
+   - Fetch latest block height via `RPC.Head()`
+   - Calculate safe processing target: `head - ConfirmationDepth`
 
-**Goal**: Detect forks without WS "removed" flags, minimize RPC calls, and roll back safely.
+3) **Range Planning**:
+   - Divide work into windows of `RangeSize` blocks
+   - Distribute ranges to fetcher workers via bounded channel
 
-**What we store (arbiter-only)**:
-- `storedWindowHash`: map of committed window end height → block hash (bounded ring/LRU).
-- Optionally: `recentBlockHash` for last K blocks to refine ancestors (not required initially).
+4) **Concurrent Fetching**:
+   - `FetcherConcurrency` workers process ranges in parallel
+   - Each worker fetches logs via `RPC.GetLogs()` with topic filters
+   - Optional timestamp fetching via batched `RPC.GetBlocks()` calls
+   - Results sent to arbiter with natural backpressure via bounded channel
 
-**Per-window attach and commit**:
-- For each window [from..to] that finishes and is next to commit:
-  - **Attach check**: fetch `header(from)` and require `header(from).ParentHash == storedHash[lastCommitted]`.
-  - **Store end**: fetch `header(to)` and set `storedHash[to] = header(to).Hash`.
-- You fetch at most 2 headers per committed window.
+5) **Ordered Processing**:
+   - Arbiter processes windows sequentially for reorg safety
+   - Verifies block hash continuity using LRU cache
+   - Decodes logs to events and stores atomically via sink
+   - Updates cursor and advances processing window
 
-**Detecting reorgs**:
-- **Attach fails**: `header(from).ParentHash != storedHash[lastCommitted]` → reorg detected.
-- **Intra-window reorgs** (between from..to):
-  - Caught next loop by either:
-    - Overlap re-fetch of last K blocks via `getLogs` and noticing differences, or
-    - Verifying a few recent stored (height, hash) entries against current headers.
+### Reorganization Handling
 
-**Lookback (find common ancestor)**:
-- Cancel the current batch context to stop all in-flight RPCs.
-- Walk back by window boundaries using stored end-of-window hashes:
-  - Start at `ancestor = lastCommitted` (e.g., 110). Loop (bounded):
-    - `child := ancestor + 1`; fetch `header(child)`.
-    - If `header(child).ParentHash == storedHash[ancestor]` → ancestor found; break.
-    - Else `ancestor -= RangeSize` and repeat (cap by `ReorgLookbackBlocks`).
-- Optional refinement (if you keep per-block ring): step down block-by-block within the last K blocks to reduce replay.
-- **Recovery**:
-  - Roll back sinks to ancestor (if used).
-  - Set `cursor = ancestor`; drop stored hashes > ancestor.
-  - Start a new batch from `ancestor+1`.
+The processor implements comprehensive reorg detection and recovery using block hash verification.
 
-**Why not check every block?**:
-- Checking only `header(from)` and `header(to)` per window keeps header RPC usage low.
-- Intra-window reorgs are caught on the next loop via overlap or stored hash verification.
+**Detection Mechanism**:
+- Maintains LRU cache of processed block hashes (`BlockHashCache`)
+- Verifies parent hash continuity before processing each window
+- Detects divergence when `block.ParentHash != cachedHash[block.Number-1]`
 
-**WS note**:
-- If you later add WS, "removed: true" logs can trigger immediate rollback hints; HTTP header checks remain the source of truth.
+**Recovery Process**:
+1. **Ancestor Search**: Binary search backward through cached hashes to find common ancestor
+2. **Sink Rollback**: Call `sink.Rollback(chainId, ancestor)` to remove orphaned events
+3. **State Reset**: Update cursor to ancestor block and clear future hashes
+4. **Resume Processing**: Restart from ancestor + 1 with fresh batch
 
-8) Architecture benefits:
-- **Workers**: Stateless, focus only on fetching logs concurrently.
-- **Arbiter**: Stateful, ensures ordered processing and reorg safety.
-- **Separation of concerns**: Fetching vs. processing/commitment logic.
-- **Backpressure**: Arbiter controls pace; if output channel fills, everything waits.
+**Configuration**:
+- `ReorgLookbackBlocks`: Maximum blocks to examine during ancestor search (default: 64)
+- `ConfirmationDepth`: Blocks to wait before processing to avoid most reorgs
 
-9) Context & error handling:
-- Honor `ctx` in all operations and loops.
-- Workers send errors to `errCh`; main loop handles cancellation.
-- Graceful shutdown: Wait for all workers and arbiter before exit.
+**Performance Characteristics**:
+- O(1) hash lookups via LRU cache
+- Bounded memory usage with configurable cache size
+- Minimal RPC overhead (only fetches headers during reorg detection)
 
-**Batch lifecycle (contexts)**:
-- `Run(ctx)` derives a `batchCtx` per scheduling iteration.
-- On reorg or error: `batchCancel()` → wait for workers → lookback → start a fresh batch.
-- Don't close the long-lived logs stream; only stop via ctx.
+### Error Handling & Resilience
 
-## Options (current implementation)
-- **RangeSize**: blocks per `eth_getLogs` window.
-- **FetcherConcurrency**: concurrent fetcher workers.
-- **StartBlock**: inclusive starting height (0 means derive from stored cursor).
-- **Confirmations**: safety depth before processing (e.g., 5–15 for "safe" on Ethereum).
-- **LogsBufferSize**: buffer size for the output logs channel.
-- **Topics**: array of function signatures or direct hashes for log filtering.
-- **ReorgLookbackBlocks**: maximum blocks to walk back during reorg detection.
+**Context Propagation**: All operations honor context cancellation for graceful shutdown.
 
-## Key Data Structures
-- **Jobs channel**: Distributes block ranges to fetcher workers.
-- **Done channel**: Signals completion of all fetchers to main loop.
-- **DoneCh**: Carries fetched logs from workers to arbiter.
-- **Window maps**: Track completion status and store logs per range.
-- **StoredWindowHash**: Cache of block hashes for reorg detection.
+**Error Classification**:
+- **Transient errors**: Automatic retry with exponential backoff
+- **Permanent errors**: Immediate failure and context cancellation
+- **Reorg errors**: Trigger rollback and recovery process
 
-## Tuning Knobs
+**Concurrency Safety**:
+- Workers isolated from each other and main arbiter
+- Shared state protected by appropriate synchronization
+- Clean shutdown waits for all goroutines
 
-**Confirmations**: Process up to `head − confirmations` (or use "safe/finalized") to keep reorgs shallow/rare.
+### Configuration Options
 
-**RangeSize**: 
-- Larger windows = fewer header calls, bigger rollback when reorgs happen.
-- Can shrink near tip for faster reorg detection.
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `RangeSize` | `int` | - | Blocks per fetch batch (balances throughput vs rollback size) |
+| `FetcherConcurrency` | `int` | - | Concurrent RPC fetch workers |
+| `StartBlock` | `uint64` | 0 | Starting block (0 = resume from cursor) |
+| `ConfirmationDepth` | `uint64` | - | Blocks to wait before processing |
+| `EnableTimestamps` | `bool` | `false` | Fetch block timestamps (additional RPC cost) |
+| `Topics` | `[]string` | - | Event signatures for filtering |
+| `Addresses` | `[]types.Address` | - | Contract addresses to monitor |
+| `FetchMode` | `FetchMode` | `"logs"` | `"logs"` or `"receipts"` |
+| `ReorgLookbackBlocks` | `uint64` | 64 | Max blocks for reorg ancestor search |
+| `UseLogsForHistoricalSync` | `bool` | `true` | Prefer `eth_getLogs` for historical data |
 
-**ReorgLookbackBlocks** (Options): Max blocks to walk back when searching for an ancestor (e.g., 64).
+### Performance Tuning
 
-**storedWindowHash capacity**: `ceil(ReorgLookbackBlocks / RangeSize) + 1`, clamped (e.g., min 8, max 256).
+**Throughput Optimization**:
+- Increase `FetcherConcurrency` to match RPC rate limits
+- Adjust `RangeSize` for optimal batch efficiency
+- Use `FetchModeReceipts` for contract-specific indexing
 
-**OverlapBlocks** (optional): Small K (e.g., 16–64) for overlap `getLogs` on each loop.
+**Memory Management**:
+- `BlockHashCache` bounded by `ReorgLookbackBlocks`
+- Window processing naturally limits in-flight memory
+- Channel buffering provides backpressure without unbounded growth
 
-## Message Flow
+**Reorg Resilience**:
+- Higher `ConfirmationDepth` reduces reorg frequency
+- Lower `ReorgLookbackBlocks` limits recovery time
+- `UseLogsForHistoricalSync` optimizes historical data fetching

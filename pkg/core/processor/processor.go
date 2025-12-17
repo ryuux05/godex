@@ -274,8 +274,8 @@ outer:
 
 		// look for block confimation
 		var conf uint64
-		if chain.opts.ConfimationDepth > 0 {
-			conf = chain.opts.ConfimationDepth
+		if chain.opts.ConfirmationDepth > 0 {
+			conf = chain.opts.ConfirmationDepth
 		}
 
 		// Get the target block
@@ -290,13 +290,13 @@ outer:
 		}
 
 		// Check for live sync
-		if chain.cursor.BlockNum >= head-chain.opts.ConfimationDepth {
+		if chain.cursor.BlockNum >= head-chain.opts.ConfirmationDepth {
 			chain.isLive = true
 		}
 
 		// Also when blocknum exceed head we need to bring it back to confirmation level
 		if chain.cursor.BlockNum > head {
-			chain.cursor.BlockNum = head - chain.opts.ConfimationDepth
+			chain.cursor.BlockNum = head - chain.opts.ConfirmationDepth
 		}
 
 		// Metrics to measure processor concurrency count.

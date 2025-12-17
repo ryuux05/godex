@@ -1,45 +1,104 @@
-# RPC architecuture
+# RPC Architecture
 
 ## Overview
 
-RPC is responsible for connecting with blockchain via http or websocket. It talk to blockchain via POST request to designated RPC. It is designed with retry strategy which is defined by user. As well as rate limiting
+The RPC client provides resilient communication with EVM-compatible blockchain nodes using JSON-RPC over HTTP. It implements rate limiting, automatic retries, and batch request optimization for high-throughput indexing.
 
-## Design Principles
+## Core Components
 
-### 1. Retry
-Every rpc function is recommended to be wrap inside the retry function. In case a retryable error occurs it will attempt to retry until the maximum attempt is being hit. In the future we will implement fallback endpoint in case the primary endpoint unrecoverable.
+### HTTP Client
+- JSON-RPC 2.0 protocol implementation
+- Configurable timeout and connection pooling
+- HTTP status code and JSON-RPC error handling
 
-The retry config configurable to suit any needs and preferences.
-There is also **default** config ready to use.
+### Rate Limiting
+- Token bucket algorithm for steady throughput
+- Configurable requests per second and burst capacity
+- Prevents provider quota exhaustion
 
+### Retry Logic
+- Exponential backoff with jitter
+- Configurable retry attempts and delays
+- Automatic retry for transient network errors
+
+### Batch Optimization
+- Automatic batching for `GetBlocks` requests
+- Reduces RPC call count for timestamp fetching
+- Maintains request ordering and correlation
+
+## Configuration
+
+### Client Setup
 ```go
-func DefaultRetryConfig() RetryConfig {
-	return RetryConfig{
-		MaxAttempts: 3,
-		InitialBackoff: 1 * time.Second,
-		MaxBackoff: 30 * time.Second,
-		Multiplier: 2.0,
-		EnableJitter: true,
-	}
+rpc := core.NewHTTPRPC(
+    "https://eth-mainnet.g.alchemy.com/v2/YOUR_KEY",  // RPC endpoint
+    20,  // Requests per second
+    5,   // Burst capacity
+)
+```
+
+### Retry Configuration
+```go
+retryConfig := &core.RetryConfig{
+    MaxAttempts:    3,
+    InitialBackoff: time.Second,
+    MaxBackoff:     30 * time.Second,
+    Multiplier:     2.0,
+    EnableJitter:   true,
 }
 ```
 
-Below is example on how to use the retry function from `retry.go`
+## Interface Methods
+
+| Method | Purpose | Batch Support |
+|--------|---------|---------------|
+| `Head()` | Latest block number | No |
+| `GetBlock(number)` | Single block header | No |
+| `GetBlocks(numbers[])` | Multiple block headers | **Yes** |
+| `GetLogs(filter)` | Event logs in range | No |
+| `GetBlockReceipts(number)` | Transaction receipts | No |
+
+## Batch Request Optimization
+
+The `GetBlocks` method automatically uses JSON-RPC batching for efficiency:
+
 ```go
-err := rpc.RetryWithBackoff(ctx, config, func() error {
-    var err error
-    heaheadHex, err = chain.chainInfo.RPC.Head(rpcCtx)
-	return errdHex
-})
+// Single call fetches multiple blocks
+blocks, err := rpc.GetBlocks(ctx, []string{"0x1", "0x2", "0x3"})
+// Equivalent to 3 separate GetBlock calls but in 1 HTTP request
 ```
 
-This makes sure that the indexer will persist through rpc failure and will continue when the rpc is recovered.
+**Benefits:**
+- Reduced network overhead
+- Lower request rate consumption
+- Maintained response correlation
 
+## Error Handling
 
-### 2. Rate limiting
-Every RPC endpoint has its own rate-limit policy. To respect these limits, the SDK allows you to configure a per-RPC rate limit and burst allowance during initialization:
-```go
-func NewHTTPRPC(endpoint string, rateLimit uint16, burstLimit uint16) *HTTPRPC 
-```
+### Error Types
+- **Network Errors**: Connection failures, timeouts
+- **HTTP Errors**: 4xx/5xx status codes
+- **RPC Errors**: JSON-RPC protocol errors (-32700, -32600, etc.)
+- **Rate Limit Errors**: Provider quota exceeded
 
-The rate limiter uses a token-bucket algorithm, chosen for its flexibility and ability to handle both steady throughput and short bursts. This ensures that your indexer stays within the provider’s allowed request rate while still maintaining optimal performance.
+### Retry Behavior
+- Automatic retry for transient errors
+- Exponential backoff prevents thundering herd
+- Configurable retry limits and delays
+
+## Performance Characteristics
+
+### Throughput
+- Rate limiting ensures sustainable request patterns
+- Batch requests maximize efficiency
+- Connection reuse via HTTP keep-alive
+
+### Reliability
+- Retry logic handles temporary failures
+- Graceful degradation on persistent issues
+- Context cancellation for clean shutdown
+
+### Resource Usage
+- Minimal memory overhead
+- Configurable timeouts prevent hanging
+- Connection pooling reduces setup costs

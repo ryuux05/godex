@@ -6,34 +6,37 @@ The Sink component is responsible for persistent storage of decoded blockchain e
 
 ## Design Principles
 
-### 1. Atomicity First
+### 1. Atomicity & Consistency
 
-All sink operations are transactional. The core principle is **all-or-nothing**: either all events in a batch are stored successfully, or none are stored at all. This ensures data consistency even when handlers fail or storage operations encounter errors.
+All sink operations are transactional with strict consistency guarantees. Events are stored atomically with cursor updates, ensuring the system can always resume from a consistent state.
 
-**Rationale**: Blockchain indexing requires strict consistency. Partial batches would lead to inconsistent state, making it impossible to reliably track which events have been processed.
+**Core Guarantees**:
+- **Atomicity**: All events in a batch succeed or all fail
+- **Consistency**: Cursor always reflects stored events
+- **Durability**: Events persist across restarts
+- **Isolation**: Concurrent operations don't interfere
 
-### 2. Handler Integration Pattern
+### 2. Pluggable Architecture
 
-Handlers execute within the same transaction as event storage, creating a unified atomic operation. This design ensures that:
-- Business logic failures trigger rollback of event storage
-- Event storage failures prevent handler side effects
-- Both operations succeed or fail together
+The sink interface enables custom storage backends while maintaining indexer compatibility:
 
-**Architectural Benefit**: Eliminates the need for complex two-phase commit protocols or eventual consistency mechanisms. The database transaction provides the atomicity guarantee.
-
-### 3. Pluggable Interface
-
-The sink is defined by a minimal interface, allowing users to implement custom storage backends (PostgreSQL, MongoDB, Kafka, file systems, etc.) without modifying core indexer logic.
-
-**Interface Design**:
 ```go
 type Sink interface {
+    // Store persists events atomically with cursor advancement
     Store(ctx context.Context, events []types.Event) error
-    Rollback(ctx context.Context, chainID string, toBlock uint64) error
+
+    // Rollback removes events from specified block onwards
+    Rollback(ctx context.Context, chainId string, toBlock uint64) error
+
+    // LoadCursor retrieves last processed block for resumption
+    LoadCursor(ctx context.Context, chainId string) (blockNum uint64, blockHash string, err error)
 }
 ```
 
-**Why Minimal**: The interface focuses on essential operations only. Additional features (cursors, migrations) are implementation-specific and don't belong in the core interface.
+**Design Rationale**:
+- Minimal interface focuses on essential operations
+- Enables diverse backends (PostgreSQL, MongoDB, Kafka, S3)
+- Cursor management integrated for consistency
 
 ## Architecture Components
 
@@ -51,26 +54,19 @@ The `Sink` interface represents the contract between the indexer core and storag
 - Used during blockchain reorganizations
 - Must be atomic
 
-### Handler Pattern
+### Cursor Management
 
-Handlers provide a mechanism for executing user-defined business logic within the storage transaction:
+Cursors track indexing progress per chain, enabling reliable restartability:
 
-**Design Rationale**:
-1. **Transaction Sharing**: Handlers receive the same transaction as event storage, ensuring atomicity
-2. **Sequential Execution**: Handlers run sequentially to maintain deterministic order
-3. **Early Failure**: Handler failures prevent event storage, enabling validation before persistence
+**Design Principles**:
+- **Atomic Updates**: Cursor advances atomically with event storage
+- **Consistent State**: Cursor always reflects the highest safely processed block
+- **Recovery Support**: System can resume from any stored cursor position
 
-**Handler Interface**:
-```go
-type Handler interface {
-    Handle(ctx context.Context, tx pgx.Tx, ev types.Event) error
-}
-```
-
-**Architectural Constraints**:
-- Handlers must use the provided transaction for database operations
-- Handler errors trigger transaction rollback
-- Handlers cannot commit or rollback the transaction (managed by sink)
+**Cursor Operations**:
+- Stored alongside events in the same transaction
+- Updated only after successful event persistence
+- Used during startup to determine processing resumption point
 
 ### Cursor Management
 
@@ -82,42 +78,25 @@ Cursors track processing progress per chain, enabling restartability. The cursor
 
 ## PostgreSQL Adapter Architecture
 
-### Dual-Mode Storage Strategy
+### PostgreSQL Implementation
 
-The PostgreSQL adapter implements two storage strategies based on batch size:
+The PostgreSQL adapter provides production-ready event storage with optimized performance:
 
-**INSERT Mode** (Small Batches):
-- Uses individual `INSERT` statements
-- Suitable for frequent, small batches
-- Lower overhead for small operations
-- Threshold: < `CopyThreshold` events
+**Storage Strategy**:
+- **Adaptive Mode**: Automatically chooses between INSERT and COPY based on batch size
+- **COPY Protocol**: High-throughput bulk loading for large batches
+- **INSERT Mode**: Standard SQL insertion for smaller batches
 
-**COPY Mode** (Large Batches):
-- Uses PostgreSQL's `COPY FROM` protocol
-- Bypasses query planner and executor
-- Direct to storage engine
-- Threshold: >= `CopyThreshold` events
+**Schema Design**:
+- **chronicle_events**: Stores all indexed events with idempotent keys
+- **chronicle_cursors**: Tracks per-chain processing progress
+- **Optimized Indexes**: Composite indexes for common query patterns
 
-**Architectural Rationale**:
-- **Performance**: COPY protocol is 10-50x faster for bulk operations
-- **Adaptive**: Automatically selects optimal strategy based on batch size
-- **Transparent**: Switching is internal to the adapter, no API changes
-
-### Transaction Management
-
-All operations occur within database transactions:
-
-**Transaction Flow**:
-1. Begin transaction
-2. Store events (INSERT or COPY)
-3. Execute handlers sequentially
-4. Update cursor
-5. Commit (or rollback on error)
-
-**Error Handling Strategy**:
-- Deferred rollback ensures cleanup on any error
-- Errors propagate immediately, preventing partial commits
-- Transaction boundaries are explicit and controlled
+**Performance Characteristics**:
+- COPY mode: 10-50x faster for bulk operations
+- Transactional consistency with cursor updates
+- Connection pooling via `pgxpool`
+- Configurable batch thresholds
 
 ### Internal Schema Design
 

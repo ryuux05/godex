@@ -18,7 +18,7 @@ type StandardDecoder struct {
 }
 
 
-func NewStandsardDecoder() *StandardDecoder {
+func NewStandardDecoder() *StandardDecoder {
 	return &StandardDecoder{
 		events: make(map[string]map[string]*types.EventDefinition),
 	}

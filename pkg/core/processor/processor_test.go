@@ -439,7 +439,7 @@ func TestRunWithOneLog_Success(t *testing.T) {
 
 		FetcherConcurrency: 4,
 		StartBlock:         0,
-		ConfimationDepth:   0,
+		ConfirmationDepth:   0,
 
 		FetchMode: FetchModeReceipts,
 	}
@@ -585,7 +585,7 @@ func TestRunWithMultipleLog_Success(t *testing.T) {
 		BatchSize:          50,
 		FetcherConcurrency: 4,
 		StartBlock:         0,
-		ConfimationDepth:   0,
+		ConfirmationDepth:   0,
 	}
 	chain := ChainInfo{
 		ChainId: "592",
@@ -710,7 +710,7 @@ func TestReorg_Success(t *testing.T) {
 
 		FetcherConcurrency: 4,
 		StartBlock:         0,
-		ConfimationDepth:   0,
+		ConfirmationDepth:   0,
 	}
 	chain := ChainInfo{
 		ChainId: "592",
@@ -838,7 +838,7 @@ func TestRunWithRetry_Success(t *testing.T) {
 
 		FetcherConcurrency: 1,
 		StartBlock:         0,
-		ConfimationDepth:   0,
+		ConfirmationDepth:   0,
 
 		FetchMode:   FetchModeLogs,
 		RetryConfig: &retryConfig,
@@ -970,7 +970,7 @@ func TestMultiChainRun_Success(t *testing.T) {
 		RangeSize:          2,
 		FetcherConcurrency: 1,
 		StartBlock:         0,
-		ConfimationDepth:   0,
+		ConfirmationDepth:   0,
 		FetchMode:          FetchModeLogs,
 		Topics:             []string{"Transfer(address,address,uint256)"},
 	}
@@ -985,7 +985,7 @@ func TestMultiChainRun_Success(t *testing.T) {
 	RangeSize:          2,
 		FetcherConcurrency: 1,
 		StartBlock:         0,
-		ConfimationDepth:   0,
+		ConfirmationDepth:   0,
 		FetchMode:          FetchModeLogs,
 		Topics:             []string{"Transfer(address,address,uint256)"},
 	}
@@ -1117,7 +1117,7 @@ func TestMultiChain_IndependentErrors(t *testing.T) {
 		RangeSize:          1,
 		FetcherConcurrency: 1,
 		StartBlock:         0,
-		ConfimationDepth:   0,
+		ConfirmationDepth:   0,
 		FetchMode:          FetchModeLogs,
 		Topics:             []string{"0xddf252ad"},
 		RetryConfig:        fastRetry,
@@ -1127,7 +1127,7 @@ func TestMultiChain_IndependentErrors(t *testing.T) {
 		RangeSize:          1,
 		FetcherConcurrency: 1,
 		StartBlock:         0,
-		ConfimationDepth:   0,
+		ConfirmationDepth:   0,
 		FetchMode:          FetchModeLogs,
 		Topics:             []string{"0xddf252ad"},
 		RetryConfig:        fastRetry,
@@ -1236,7 +1236,7 @@ func TestMultiChain_BothChainsSucceed(t *testing.T) {
 		RangeSize:          1,
 		FetcherConcurrency: 1,
 		StartBlock:         0,
-		ConfimationDepth:   0,
+		ConfirmationDepth:   0,
 		FetchMode:          FetchModeLogs,
 		Topics:             []string{"0xddf252ad"},
 		RetryConfig: &rpc.RetryConfig{
@@ -1341,7 +1341,7 @@ func TestUseLogsForHistoricalSync_False(t *testing.T) {
 		RangeSize:          1,
 		FetcherConcurrency: 1,
 		StartBlock:         0,
-		ConfimationDepth:   0,
+		ConfirmationDepth:   0,
 		FetchMode:          FetchModeLogs,
 		Topics:             []string{"0xddf252ad"},
 		RetryConfig: &rpc.RetryConfig{
@@ -1472,7 +1472,7 @@ func TestRun_CallsDecoderForEachLog(t *testing.T) {
 		RangeSize:          10,
 		FetcherConcurrency: 1,
 		StartBlock:         0,
-		ConfimationDepth:   0,
+		ConfirmationDepth:   0,
 		FetchMode:          FetchModeLogs,
 	}
 
@@ -1523,7 +1523,7 @@ func TestRun_StoresDecodedEventsToSink(t *testing.T) {
 		RangeSize:          10,
 		FetcherConcurrency: 1,
 		StartBlock:         0,
-		ConfimationDepth:   0,
+		ConfirmationDepth:   0,
 		FetchMode:          FetchModeLogs,
 	}
 
@@ -1573,7 +1573,7 @@ func TestRun_SkipsNilEventsFromDecoder(t *testing.T) {
 		RangeSize:          10,
 		FetcherConcurrency: 1,
 		StartBlock:         0,
-		ConfimationDepth:   0,
+		ConfirmationDepth:   0,
 		FetchMode:          FetchModeLogs,
 	}
 
@@ -1617,7 +1617,7 @@ func TestRun_HandlesDecodeErrors(t *testing.T) {
 		RangeSize:          10,
 		FetcherConcurrency: 1,
 		StartBlock:         0,
-		ConfimationDepth:   0,
+		ConfirmationDepth:   0,
 		FetchMode:          FetchModeLogs,
 	}
 
@@ -1716,7 +1716,7 @@ func TestReorg_CallsSinkRollback(t *testing.T) {
 		RangeSize:          10,
 		FetcherConcurrency: 1,
 		StartBlock:         0,
-		ConfimationDepth:   0,
+		ConfirmationDepth:   0,
 		FetchMode:          FetchModeLogs,
 	}
 
@@ -1758,7 +1758,7 @@ func TestSinkStoreError_HandledGracefully(t *testing.T) {
 		RangeSize:          10,
 		FetcherConcurrency: 1,
 		StartBlock:         0,
-		ConfimationDepth:   0,
+		ConfirmationDepth:   0,
 		FetchMode:          FetchModeLogs,
 		RetryConfig: &rpc.RetryConfig{
 			MaxAttempts:    1,
@@ -1913,7 +1913,7 @@ func TestRun_WithEnableTimestamps(t *testing.T) {
 		RangeSize:          10,
 		FetcherConcurrency: 1,
 		StartBlock:         0,
-		ConfimationDepth:   0,
+		ConfirmationDepth:   0,
 		FetchMode:          FetchModeLogs,
 		EnableTimestamps:   true,
 	}

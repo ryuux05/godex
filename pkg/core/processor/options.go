@@ -35,7 +35,7 @@ type Options struct {
 	// Confimation is range of block to wait.
 	// Confirmation is used to avoid most reorgs.
 	// Eth PoS confirmation is around 5-15 for "safe"
-	ConfimationDepth uint64
+	ConfirmationDepth uint64
 	// EnableTimestamps allow you to get timestamps for each event.
 	// Note that enabling this would cost additional call to the RPC.
 	// Default: false

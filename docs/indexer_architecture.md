@@ -1,38 +1,39 @@
 ```mermaid
 flowchart LR
   subgraph SDKCore["SDK Core"]
-    subgraph ProcessorCluster["Processor (per chain)"]
-      P["Processor\n- fetch windows\n- reorg handling\n- cursor per chain"]
-      RPC["RPC Client\n(HTTP/WS)"]
-      P -->|"GetLogs / GetBlock / GetReceipts"| RPC
+    subgraph Processor["Processor (per chain)"]
+      F["Fetchers\n- concurrent RPC\n- batch requests\n- rate limiting"]
+      A["Arbiter\n- ordered processing\n- reorg detection\n- LRU hash cache"]
+      DEC["Decoder\n- ABI-based\n- event transformation"]
+      RPC["RPC Client\n(HTTP + retry)"]
+      F -->|"GetLogs/GetBlocks"| RPC
     end
 
-    D["Decoder\n(ABI-based)"]
-    SINK_IF["Sink interface\n(Store, Rollback)"]
+    SINK_IF["Sink interface\n(Store, Rollback, LoadCursor)"]
   end
 
   subgraph Adapters["Adapters / Implementations"]
-    PSINK["PostgresSink\n- COPY/INSERT\n- tx commit/rollback"]
+    PSINK["PostgresSink\n- atomic storage\n- tx rollback\n- cursor persistence"]
     METRICS["Metrics (Prometheus)\n- counters/gauges/histograms"]
   end
 
-  subgraph Orchestrator["Indexer / User App"]
-    IX["Indexer\n- wires Processor + Decoder + Sink\n- owns cross-cutting metrics"]
+  subgraph UserApp["User Application"]
+    APP["Application\n- configures chains\n- provides decoder\n- handles events"]
   end
 
-  %% Wiring
-  IX -->|"configure chains + options"| P
-  P -->|"Logs(chainId)"| IX
-  IX -->|"Decode(log)"| D
-  D -->|"Event"| IX
-  IX -->|"Store([]Event)"| SINK_IF
+  %% Data flow
+  APP -->|"NewProcessor(metrics, sink)"| Processor
+  APP -->|"AddChain(chain, opts, decoder)"| Processor
+  F -->|"raw logs + timestamps"| A
+  A -->|"decoded events"| DEC
+  DEC -->|"structured events"| SINK_IF
   SINK_IF --> PSINK
 
-  %% Metrics responsibilities
-  P -->|"ObservedBlockFetchDuration\nSetProcessorConcurrency\nIncReorgs"| METRICS
-  PSINK -->|"ObservedSinkWriteDuration\nIncSinkWrites/Errors\nSetIndexedHeight"| METRICS
-  IX -->|"IncBlocksProcessed\nObservedBlockLag(head - persistedHeight)"| METRICS
+  %% Metrics flow
+  F -->|"ObservedBlockFetchDuration"| METRICS
+  A -->|"IncReorgs"| METRICS
+  PSINK -->|"IncSinkWrites/Errors\nObservedSinkWriteDuration\nSetIndexedHeight"| METRICS
 
   %% External
-  RPC ---|"RPC calls"| CHAIN["Blockchain node(s)"]
+  RPC ---|"JSON-RPC calls"| CHAIN["Blockchain node(s)"]
 ```

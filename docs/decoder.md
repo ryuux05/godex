@@ -15,20 +15,21 @@ The Decoder is a pluggable component responsible for transforming raw blockchain
 
 ### Interface Definition
 
-The Decoder interface defines the minimal contract for log decoding:
+The Decoder interface defines the contract for transforming raw blockchain logs into structured events:
 
 ```go
 type Decoder interface {
-    Decode(name string, log types.Log) (*Event, error)
-    DecodeBatch(name string, logs []types.Log) ([]*Event, error)
-    GetTopics() []string
+    // Decode transforms a single log into a structured event
+    Decode(name string, chainId string, log types.Log) (*types.Event, error)
+
+    // DecodeBatch processes multiple logs efficiently
+    DecodeBatch(logs []types.Log) (*[]types.Event, error)
 }
 ```
 
 **Methods:**
-- `Decode`: Transforms a single raw log into a decoded Event
-- `DecodeBatch`: Processes multiple logs efficiently (default implementation may iterate Decode)
-- `GetTopics`: Returns registered event signatures for RPC filtering coordination
+- `Decode(name, chainId, log)`: Transforms a single log using specified ABI identifier and chain context
+- `DecodeBatch(logs)`: Processes multiple logs efficiently (may use batch optimizations)
 
 ### Event Structure
 
@@ -112,14 +113,14 @@ decoder.RegisterABI("MyContract", myContractABI)
 
 **Decoding with Identifier:**
 ```go
-// Decode using ERC20 ABI
-event, err := decoder.DecodeWith("ERC20", log)
+// Decode using ERC20 ABI for Ethereum chain
+event, err := decoder.Decode("ERC20", "1", log)
 
-// Decode using ERC721 ABI
-event, err := decoder.DecodeWith("ERC721", log)
+// Decode using ERC721 ABI for Polygon chain
+event, err := decoder.Decode("ERC721", "137", log)
 
-// Batch decode with specific ABI
-events, err := decoder.DecodeWithBatch("ERC20", logs)
+// Batch decode (ABI selection handled internally)
+events, err := decoder.DecodeBatch(logs)
 ```
 
 ### ABI Requirements
@@ -232,5 +233,19 @@ Users can implement custom decoders for non-standard requirements:
 
 ### Integration with Processor
 
-The Processor invokes the decoder after log fetching:
+The Processor integrates decoders directly during event processing:
+
+```go
+// Register decoder when adding chain
+processor.AddChain(chain, options, decoder)
+
+// Processor automatically:
+// 1. Fetches logs via RPC
+// 2. Calls decoder.Decode() for each log
+// 3. Stores resulting events via sink
 ```
+
+**Key Integration Points:**
+- Decoder registered per-chain during `AddChain()`
+- Processor handles decoding internally for ordered, atomic processing
+- Decoder errors logged but don't stop processing (resilient design)
