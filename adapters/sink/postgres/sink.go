@@ -41,6 +41,7 @@ func NewSink(cfg SinkConfig) (*PGSink, error) {
 		m = metrics.Noop{} // or expose a constructor for this
 	}
 
+	// the performance after 32 rows with copy will show improvement
 	if cfg.CopyThreshold <= 0 {
 		cfg.CopyThreshold = 32 // or 64
 	}
