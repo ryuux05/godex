@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"math/big"
+	"net/http"
 	"os"
 	"os/signal"
 	"strconv"
@@ -14,6 +15,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/ryuux05/godex/adapters/metrics"
 	"github.com/ryuux05/godex/adapters/sink/postgres"
 	"github.com/ryuux05/godex/pkg/core"
@@ -114,13 +116,13 @@ func (h *ERC20Handler) handleApproval(ctx context.Context, tx pgx.Tx, event type
 func main() {
 	// Setup structured logging
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
-		Level: slog.LevelInfo,
+		Level: slog.LevelDebug,
 	}))
 
 	// Get configuration from environment
 	rpcURL := getEnv("RPC_URL", "https://eth-mainnet.g.alchemy.com/v2/demo")
 	databaseURL := getEnv("DATABASE_URL", "postgres://godex:password@localhost:5432/godex?sslmode=disable")
-	startBlock := getEnvUint64("START_BLOCK", 18000000)
+	startBlock := getEnvUint64("START_BLOCK", 0)
 
 	logger.Info("initializing ERC20 indexer",
 		slog.String("rpc_url", rpcURL),
@@ -147,6 +149,7 @@ func main() {
 	prometheusMetrics := metrics.New("godex", prometheus.DefaultRegisterer)
 
 	// Create handler for custom processing
+
 	handler := &ERC20Handler{}
 
 	// Create sink with handler
@@ -180,14 +183,14 @@ func main() {
 
 	// Configure indexing options
 	opts := &core.Options{
-		RangeSize:          1000, // blocks per batch
-		FetcherConcurrency: 4,    // concurrent fetchers
+		RangeSize:          10, // blocks per batch
+		FetcherConcurrency: 5,    // concurrent fetchers
 		StartBlock:         startBlock,
-		ConfirmationDepth:  12,   // wait for confirmations
+		ConfirmationDepth:  45,   // wait for confirmations
 		EnableTimestamps:   true, // include block timestamps
 		Topics: []string{
 			"0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef", // Transfer(address,address,uint256)
-			"0x8c5be1e5ebec7d5bd14f71427d1e84f3dd0314c0f7b2291e5b200ac8c7c3b925", // Approval(address,address,uint256)
+			// Approval(address,address,uint256)
 		},
 		FetchMode:                core.FetchModeLogs,
 		UseLogsForHistoricalSync: true,
@@ -195,8 +198,8 @@ func main() {
 
 	// Define Ethereum mainnet
 	chain := core.ChainInfo{
-		ChainId: "1",
-		Name:    "Ethereum",
+		ChainId: "592",
+		Name:    "ERC20",
 		RPC:     rpc,
 	}
 
@@ -212,7 +215,7 @@ func main() {
 	}
 
 	logger.Info("starting ERC20 indexer",
-		slog.String("chain", "Ethereum"),
+		slog.String("chain", chain.Name),
 		slog.Uint64("start_block", opts.StartBlock),
 		slog.Int("range_size", opts.RangeSize),
 		slog.Int("fetcher_concurrency", opts.FetcherConcurrency),
@@ -222,6 +225,14 @@ func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(),
 		syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
+
+	go func() {
+        http.Handle("/metrics", promhttp.Handler())
+        logger.Info("metrics server starting", slog.String("addr", ":9090"))
+        if err := http.ListenAndServe(":9090", nil); err != nil {
+            logger.Error("metrics server failed", slog.Any("error", err))
+        }
+    }()
 
 	// Start indexing - events automatically decoded and stored
 	err = processor.Run(ctx)

@@ -10,23 +10,62 @@ A complete example demonstrating how to index ERC20 Transfer and Approval events
 - **Reorg Handling**: Automatic rollback on blockchain reorganizations
 - **Metrics Export**: Prometheus metrics for monitoring
 - **Graceful Shutdown**: Handles SIGINT/SIGTERM signals
+- **Docker Ready**: Single command to run everything
 
-## Architecture
 
+
+## Quick Start with Docker
+
+The fastest way to run the example - everything in containers.
+
+### 1. Configure Environment
+
+Create a `.env` file:
+
+```bash
+RPC_URL=https://eth-mainnet.g.alchemy.com/v2/YOUR_API_KEY
+START_BLOCK=18000000
 ```
-┌─────────────┐     ┌──────────┐     ┌──────────┐     ┌──────────┐
-│   RPC       │────►│ Processor│────►│  Decoder │────►│   Sink   │
-│ (Ethereum)  │     │          │     │ (ERC20)  │     │(Postgres)│
-└─────────────┘     └──────────┘     └──────────┘     └────┬─────┘
-                                                             │
-                                                             ▼
-                                                      ┌──────────┐
-                                                      │ Handler  │
-                                                      │(Custom)  │
-                                                      └──────────┘
+
+### 2. Start Everything
+
+```bash
+docker-compose up -d
 ```
 
-## Setup
+This single command will:
+- Start PostgreSQL and wait for it to be healthy
+- Automatically initialize the database schema
+- Build and run the indexer container
+
+### 3. View Logs
+
+```bash
+# All services
+docker-compose logs -f
+
+# Just the indexer
+docker-compose logs -f indexer
+
+# Just PostgreSQL
+docker-compose logs -f postgres
+```
+
+### 4. Stop Services
+
+```bash
+docker-compose down
+```
+
+### 5. Clean Everything (including data)
+
+```bash
+docker-compose down -v
+```
+
+## Local Development Setup
+
+For development, you may want to run the indexer locally while keeping PostgreSQL in Docker.
 
 ### 1. Prerequisites
 
@@ -36,18 +75,16 @@ A complete example demonstrating how to index ERC20 Transfer and Approval events
 
 ### 2. Environment Variables
 
-Create a `.env` file or export variables:
-
 ```bash
 export RPC_URL="https://eth-mainnet.g.alchemy.com/v2/YOUR_API_KEY"
 export DATABASE_URL="postgres://godex:password@localhost:5432/godex?sslmode=disable"
 export START_BLOCK=18000000  # Optional: default is 18M
 ```
 
-### 3. Start Infrastructure
+### 3. Start PostgreSQL Only
 
 ```bash
-docker-compose up -d
+docker-compose up -d postgres
 ```
 
 Wait for PostgreSQL to be ready (healthcheck will verify).
@@ -60,7 +97,7 @@ The sink automatically creates internal tables. For custom handler tables:
 psql postgres://godex:password@localhost:5432/godex -f schema.sql
 ```
 
-### 5. Run Indexer
+### 5. Run Indexer Locally
 
 ```bash
 cd examples/erc20-indexer
@@ -136,11 +173,11 @@ Structured JSON logs include:
 
 ```go
 opts := &core.Options{
-    RangeSize:              1000,  // Blocks per batch
-    FetcherConcurrency:    4,     // Concurrent workers
-    StartBlock:             18000000,
-    ConfirmationDepth:     12,    // Wait for confirmations
-    EnableTimestamps:       true, // Include block timestamps
+    RangeSize:          1000,     // Blocks per batch
+    FetcherConcurrency: 4,        // Concurrent workers
+    StartBlock:         18000000,
+    ConfirmationDepth:  12,       // Wait for confirmations
+    EnableTimestamps:   true,     // Include block timestamps
     Topics: []string{
         "0xddf252ad...", // Transfer
         "0x8c5be1e5...", // Approval
@@ -156,6 +193,42 @@ rpc := core.NewHTTPRPC(
     20, // requests per second
     5,  // burst capacity
 )
+```
+
+## Docker Configuration
+
+### File Structure
+
+```
+examples/erc20-indexer/
+├── Dockerfile           # Multi-stage build for indexer
+├── docker-compose.yml   # PostgreSQL + Indexer services
+├── main.go              # Indexer application
+├── erc20_abi.json       # ERC20 event definitions
+├── schema.sql           # Custom handler tables
+└── README.md            # This file
+```
+
+### Customizing docker-compose.yml
+
+```yaml
+services:
+  indexer:
+    environment:
+      RPC_URL: ${RPC_URL}                    # Your RPC endpoint
+      DATABASE_URL: postgres://...           # Database connection
+      START_BLOCK: ${START_BLOCK:-18000000}  # Starting block
+    depends_on:
+      postgres:
+        condition: service_healthy           # Wait for DB
+    restart: unless-stopped                  # Auto-restart on failure
+```
+
+### Building the Image Manually
+
+```bash
+# From repository root
+docker build -t godex-erc20-indexer -f examples/erc20-indexer/Dockerfile .
 ```
 
 ## Querying Data
@@ -211,6 +284,12 @@ Send SIGINT (Ctrl+C) for graceful shutdown. The indexer will:
 - Close database connections
 - Exit cleanly
 
+For Docker:
+```bash
+docker-compose down      # Stop containers
+docker-compose down -v   # Stop and remove volumes
+```
+
 ## Troubleshooting
 
 ### Database Connection Errors
@@ -221,6 +300,19 @@ docker-compose ps
 
 # Check connection
 psql postgres://godex:password@localhost:5432/godex -c "SELECT 1"
+
+# View PostgreSQL logs
+docker-compose logs postgres
+```
+
+### Indexer Not Starting
+
+```bash
+# Check indexer logs
+docker-compose logs indexer
+
+# Verify environment variables
+docker-compose config
 ```
 
 ### RPC Rate Limiting
@@ -236,6 +328,16 @@ If you hit rate limits:
 - Lower `FetcherConcurrency` for fewer workers
 - Monitor with `godex_processor_concurrency` metric
 
+### Container Build Issues
+
+```bash
+# Rebuild without cache
+docker-compose build --no-cache
+
+# Check build logs
+docker-compose build indexer
+```
+
 ## Next Steps
 
 - Add more event types (ERC721, custom contracts)
@@ -246,4 +348,3 @@ If you hit rate limits:
 ## License
 
 See [LICENSE](../../LICENSE) file.
-

@@ -413,7 +413,7 @@ func TestHttpRateLimitBurst_Success(t *testing.T) {
 	defer cancel()
 
 	laps := make([]time.Time, 25)
-	
+
 	for i := 0; i < workers; i++ {
 		go func() {
 			defer wg.Done()
@@ -423,10 +423,10 @@ func TestHttpRateLimitBurst_Success(t *testing.T) {
 				assert.NoError(t, err)
 				// Make sure each goroutine have unique index
 				k := atomic.AddInt64(&idx, 1) - 1
-            	laps[k] = time.Now()
+				laps[k] = time.Now()
 			}
 		}()
-		
+
 	}
 
 	close(done)

@@ -15,3 +15,31 @@
 # Output of the go coverage tool
 *.out
 
+# Git
+.git
+.gitignore
+
+# Build artifacts
+*.exe
+*.test
+*.out
+
+# Dependencies
+vendor/
+
+# IDE
+.idea
+.vscode
+*.swp
+
+# Documentation
+docs/
+*.md
+!examples/erc20-indexer/README.md
+
+# Test files
+*_test.go
+
+# Examples (except this one)
+examples/*
+!examples/erc20-indexer

@@ -3,6 +3,7 @@ package errors
 import (
 	"errors"
 	"fmt"
+	"strings"
 )
 
 type HTTPError struct {
@@ -53,6 +54,16 @@ func IsRetryableError(err error) bool {
 			return true
 		}
 	}
+
+	errStr := err.Error()
+    if strings.Contains(errStr, "context deadline exceeded") ||
+        strings.Contains(errStr, "connection refused") ||
+        strings.Contains(errStr, "connection reset") ||
+        strings.Contains(errStr, "no such host") ||
+        strings.Contains(errStr, "i/o timeout") ||
+        strings.Contains(errStr, "temporary failure") {
+        return true
+    }
 
 	return false
 }

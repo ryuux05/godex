@@ -150,9 +150,19 @@ func (p *Processor) addChain(chain ChainInfo, opts *Options, blockNum uint64, bl
 
 	var cursor *cursorState = &cursorState{}
 	if blockNum != 0 && blockHash != "" {
+
 		if blockNum > startBlock {
 			cursor.BlockNum = blockNum
+			cursor.BlockHash = blockHash
+		} else {
+
+			cursor.BlockNum = startBlock
+			cursor.BlockHash = ""
 		}
+	} else {
+
+		cursor.BlockNum = startBlock
+		cursor.BlockHash = ""
 	}
 	cursor.BlockHash = blockHash
 
