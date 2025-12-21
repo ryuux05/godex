@@ -49,7 +49,7 @@ type Options struct {
 	// Default: 64 (good starting point)
 	ReorgLookbackBlocks uint64
 	// Topics is the event for indexer to listen and get the log
-	Topics []string
+	Topics [][]string
 	// Addresses is a list of whitelisted addresses to filter
 	Addresses []types.Address
 	// FetchMode determines which RPC method to use for fetching logs

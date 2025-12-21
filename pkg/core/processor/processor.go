@@ -33,7 +33,7 @@ type chainState struct {
 	// The number of block that we will fall back to in case we couldnt resolve reorg
 	hardFallbackBlocks uint64
 	// Storage to store the formatted topics
-	topics []string
+	topics [][]string
 	// Map of whitelisted contract for processor to queue
 	addressSet map[string]struct{}
 	// List of whitelisted contract addresses
@@ -636,7 +636,12 @@ outer:
 				rpcCancel()
 				<-done
 				<-arbiterDone
-				return err
+
+				// Retry the batch when error received
+				p.logger.Warn("restarting batch after error")
+				time.Sleep(5 * time.Second)
+				continue outer
+				
 			case <-ctx.Done():
 				rpcCancel()
 				<-done

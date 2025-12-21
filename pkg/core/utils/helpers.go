@@ -42,17 +42,20 @@ func FunctionSignatureToTopic(signature string) string {
 	return "0x" + hex.EncodeToString(hash)
 }
 
-func ConvertToTopics(signatures []string) []string {
-	topics := make([]string, len(signatures))
+func ConvertToTopics(signatures [][]string) [][]string {
+	topics := make([][]string, len(signatures))
 	for i, signature := range signatures {
-		// Check if the signature has been hashed to keccak256 and has the hex prefix
-		if len(signature) == 66 && strings.HasPrefix(signature, "0x") {
-			topics[i] = signature
-			// Check if the signature has been hashed but didnt have the hex prefix
-		} else if len(signature) == 64 && !strings.HasPrefix(signature, "0x") {
-			topics[i] = "0x" + signature
-		} else {
-			topics[i] = FunctionSignatureToTopic(signature)
+		for j, topic := range signature {
+			topics[i] = make([]string, len(signature))
+			// Check if the signature has been hashed to keccak256 and has the hex prefix
+			if len(topic) == 66 && strings.HasPrefix(topic, "0x") {
+				topics[i][j] = topic
+				// Check if the signature has been hashed but didnt have the hex prefix
+			} else if len(topic) == 64 && !strings.HasPrefix(topic, "0x") {
+				topics[i][j] = "0x" + topic
+			} else {
+				topics[i][j] = FunctionSignatureToTopic(topic)
+			}
 		}
 		
 	}
