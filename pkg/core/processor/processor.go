@@ -87,6 +87,13 @@ func NewProcessor(m metrics.Metrics, s sink.Sink) *Processor {
 
 func (p *Processor) AddChain(chain ChainInfo, opts *Options, decoder decoder.Decoder) error {
 	blockNum, blockHash, err := p.sink.LoadCursor(context.Background(), chain.ChainId)
+	p.logger.Info("cursor loaded from sink",
+        slog.String("chain_id", chain.ChainId),
+        slog.Uint64("loaded_block_num", blockNum),
+        slog.String("loaded_block_hash", blockHash),
+        slog.Uint64("start_block", opts.StartBlock),
+        slog.Any("error", err))
+		
 	if err != nil {
 		// If cursor not found (clean db), start from block 0
 		if errors.Is(err, coreerrors.ErrCursorNotFound) {
