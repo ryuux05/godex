@@ -27,6 +27,8 @@ services:
       RPC_URL: ${RPC_URL:-https://eth-mainnet.g.alchemy.com/v2/demo}
       DATABASE_URL: postgres://godex:password@postgres:5432/godex?sslmode=disable
       START_BLOCK: ${START_BLOCK:-1800000}
+    env_file:
+    - .env
     depends_on:
       postgres:
         condition: service_healthy

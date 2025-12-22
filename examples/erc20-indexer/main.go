@@ -134,8 +134,8 @@ func main() {
 	// Initialize RPC client
 	rpc := core.NewHTTPRPC(
 		rpcURL,
-		20, // requests per second
-		5,  // burst capacity
+		10, // requests per second
+		20,  // burst capacity
 	)
 
 	// Create database connection pool
@@ -185,7 +185,7 @@ func main() {
 	// Configure indexing options
 	opts := &core.Options{
 		RangeSize:          5, // blocks per batch
-		FetcherConcurrency: 10,    // concurrent fetchers
+		FetcherConcurrency: 20,    // concurrent fetchers
 		StartBlock:         startBlock,
 		ConfirmationDepth:  45,   // wait for confirmations
 		EnableTimestamps:   true, // include block timestamps

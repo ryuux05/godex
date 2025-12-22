@@ -46,6 +46,29 @@ type chainState struct {
 	opts *Options
 }
 
+type chainProgress struct {
+    mu sync.RWMutex
+    
+    // Sync start state
+    syncStartTime  time.Time
+    syncStartBlock uint64
+    
+    // Current state (updated by processor)
+    currentBlock   uint64
+    eventsStored   uint64
+    
+    // Last log state (for calculating speeds)
+    lastLogTime    time.Time
+    lastLogBlock   uint64
+    lastLogEvents  uint64
+    
+    // Head (updated periodically)
+    headBlock      uint64
+    
+    // Status
+    isLive         bool
+}
+
 type Processor struct {
 	// chains is an internal per-chain state
 	// It's a map with chainId as key.
@@ -93,7 +116,7 @@ func (p *Processor) AddChain(chain ChainInfo, opts *Options, decoder decoder.Dec
         slog.String("loaded_block_hash", blockHash),
         slog.Uint64("start_block", opts.StartBlock),
         slog.Any("error", err))
-		
+
 	if err != nil {
 		// If cursor not found (clean db), start from block 0
 		if errors.Is(err, coreerrors.ErrCursorNotFound) {
@@ -381,6 +404,7 @@ outer:
 								Topics:    chain.topics,
 								Address:   chain.addresses,
 							}
+							
 							// Record fetch time
 							logs, err = chain.chainInfo.RPC.GetLogs(rpcCtx, filter)
 
