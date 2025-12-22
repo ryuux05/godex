@@ -11,6 +11,7 @@ import (
 	"os/signal"
 	"strconv"
 	"syscall"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -189,11 +190,19 @@ func main() {
 		ConfirmationDepth:  45,   // wait for confirmations
 		EnableTimestamps:   true, // include block timestamps
 		Topics: [][]string{
-			{"0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"}, // Transfer(address,address,uint256)
-			{"0x8c5be1e5ebec7d5bd14f71427d1e84f3dd0314c0f7b2291e5b200ac8c7c3b925"},// Approval(address,address,uint256)
+			{"0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef", // Transfer(address,address,uint256)
+			"0x8c5be1e5ebec7d5bd14f71427d1e84f3dd0314c0f7b2291e5b200ac8c7c3b925", // Approval(address,address,uint256)
+			}, 
 		},
-		FetchMode:                core.FetchModeLogs,
+		FetchMode:                core.FetchModeReceipts,
 		UseLogsForHistoricalSync: true,
+		RetryConfig: &core.RetryConfig{
+			MaxAttempts:    10,             // Increase from 3
+			InitialBackoff: 5 * time.Second,
+			MaxBackoff:     60 * time.Second, // Increase from 30s
+			Multiplier:     2.0,
+			EnableJitter:   true,
+		},
 	}
 
 	// Define Ethereum mainnet
@@ -222,9 +231,12 @@ func main() {
 	)
 
 	// Setup graceful shutdown
-	ctx, cancel := signal.NotifyContext(context.Background(),
-		syscall.SIGINT, syscall.SIGTERM)
+	ctx, cancel := signal.NotifyContext(context.Background())
 	defer cancel()
+
+	// Channel to receive OS signals
+    sigChan := make(chan os.Signal, 1)
+    signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 
 	go func() {
         http.Handle("/metrics", promhttp.Handler())
@@ -234,12 +246,41 @@ func main() {
         }
     }()
 
-	// Start indexing - events automatically decoded and stored
-	err = processor.Run(ctx)
-	if err != nil && err != context.Canceled {
-		logger.Error("indexer stopped with error", slog.Any("error", err))
-		os.Exit(1)
-	}
+	// Run processor in goroutine
+	errChan := make(chan error, 1)
+	go func() {
+		errChan <- processor.Run(ctx)
+	}()
+	 // Wait for signal or processor error
+	select {
+    case sig := <-sigChan:
+        logger.Info("received shutdown signal", slog.String("signal", sig.String()))
+        
+        // Cancel context to stop new work
+        cancel()
+        
+        // Wait for graceful shutdown with timeout
+        shutdownTimeout := 30 * time.Second
+        logger.Info("waiting for in-flight requests to complete", 
+            slog.Duration("timeout", shutdownTimeout))
+        
+        select {
+        case err := <-errChan:
+            if err != nil && err != context.Canceled {
+                logger.Error("processor stopped with error", slog.Any("error", err))
+            }
+        case <-time.After(shutdownTimeout):
+            logger.Warn("shutdown timeout exceeded, forcing exit")
+        case sig := <-sigChan:
+            logger.Warn("received second signal, forcing exit", slog.String("signal", sig.String()))
+        }
+        
+    case err := <-errChan:
+        if err != nil {
+            logger.Error("processor stopped with error", slog.Any("error", err))
+            os.Exit(1)
+        }
+    }
 
 	logger.Info("indexer stopped gracefully")
 }

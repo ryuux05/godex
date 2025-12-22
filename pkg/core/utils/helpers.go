@@ -45,8 +45,8 @@ func FunctionSignatureToTopic(signature string) string {
 func ConvertToTopics(signatures [][]string) [][]string {
 	topics := make([][]string, len(signatures))
 	for i, signature := range signatures {
+		topics[i] = make([]string, len(signature))
 		for j, topic := range signature {
-			topics[i] = make([]string, len(signature))
 			// Check if the signature has been hashed to keccak256 and has the hex prefix
 			if len(topic) == 66 && strings.HasPrefix(topic, "0x") {
 				topics[i][j] = topic

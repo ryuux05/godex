@@ -131,7 +131,7 @@ func (s *PGSink) Store(ctx context.Context, events []types.Event) (err error) {
 	return nil
 }
 
-func (s *PGSink) Rollback(ctx context.Context, chainId string, toBlock uint64) (err error) {
+func (s *PGSink) Rollback(ctx context.Context, chainId string, toBlock uint64, blockHash string) (err error) {
 	start := time.Now()
 	success := false
 	defer func() {
@@ -171,7 +171,7 @@ func (s *PGSink) Rollback(ctx context.Context, chainId string, toBlock uint64) (
         VALUES ($1, $2, $3)
         ON CONFLICT (chain_id)
         DO UPDATE SET block_num = $2, block_hash = $3
-    `, chainId, newBlock, "")
+    `, chainId, newBlock, blockHash)
 	if err != nil {
 		return fmt.Errorf("failed to update cursor: %w", err)
 	}

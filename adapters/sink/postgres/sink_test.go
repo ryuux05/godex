@@ -345,7 +345,7 @@ func TestRollback(t *testing.T) {
 	assert.Equal(t, 3, count)
 
 	// Rollback to block 401 (should delete block 401 and 402)
-	err = sink.Rollback(ctx, "1", 401)
+	err = sink.Rollback(ctx, "1", 401, "")
 	assert.NoError(t, err)
 
 	// Verify only block 400 remains
@@ -424,7 +424,7 @@ func TestRollback_ToZero(t *testing.T) {
 	require.NoError(t, err)
 
 	// Rollback to block 0
-	err = sink.Rollback(ctx, "1", 0)
+	err = sink.Rollback(ctx, "1", 0, "")
 	assert.NoError(t, err)
 
 	// Verify cursor is 0

@@ -70,7 +70,7 @@ func (m *MockSink) Store(ctx context.Context, events []types.Event) error {
 	return m.StoreErr
 }
 
-func (m *MockSink) Rollback(ctx context.Context, chainId string, toBlock uint64) error {
+func (m *MockSink) Rollback(ctx context.Context, chainId string, toBlock uint64, blockHash string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.RollbackCalls = append(m.RollbackCalls, struct {

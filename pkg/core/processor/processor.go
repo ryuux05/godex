@@ -149,7 +149,7 @@ func (p *Processor) addChain(chain ChainInfo, opts *Options, blockNum uint64, bl
 	}
 
 	var cursor *cursorState = &cursorState{}
-	if blockNum != 0 && blockHash != "" {
+	if blockNum > 0 {
 
 		if blockNum > startBlock {
 			cursor.BlockNum = blockNum
@@ -164,7 +164,6 @@ func (p *Processor) addChain(chain ChainInfo, opts *Options, blockNum uint64, bl
 		cursor.BlockNum = startBlock
 		cursor.BlockHash = ""
 	}
-	cursor.BlockHash = blockHash
 
 	// Clamp the max storedwindowhash bound.
 	rs := uint64(opts.RangeSize)                     // assume >0
@@ -539,7 +538,14 @@ outer:
 							ancestor := p.handleReorg(ctx, chain)
 
 							// Rollback sink to ancestor
-							if err := p.sink.Rollback(rpcCtx, chain.chainInfo.ChainId, ancestor); err != nil {
+							ancestorHash, exist := chain.blockHashCache.Get(ancestor)
+							if !exist {
+								block, err := chain.chainInfo.RPC.GetBlock(rpcCtx, utils.Uint64ToHexQty(ancestor))
+								if err == nil {
+									ancestorHash = block.Hash
+								}	
+							}
+							if err := p.sink.Rollback(rpcCtx, chain.chainInfo.ChainId, ancestor, ancestorHash); err != nil {
 								p.logger.Error("failed to rollback sink", slog.String("chain_id", chain.chainInfo.ChainId), slog.Any("error", err))
 							}
 

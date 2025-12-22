@@ -13,7 +13,7 @@ type Sink interface {
 	Store(ctx context.Context, events []types.Event) error
 	// Rollback removes all events from a block number onwards
 	// Used during reorg handling to remove orphaned blocks
-	Rollback(ctx context.Context, chainId string, toBlock uint64) error
+	Rollback(ctx context.Context, chainId string, toBlock uint64, blockHash string) error
 	LoadCursor(ctx context.Context, chainId string) (blockNum uint64, blockHash string, err error)
 }
 
