@@ -134,8 +134,8 @@ func main() {
 	// Initialize RPC client
 	rpc := core.NewHTTPRPC(
 		rpcURL,
-		10, // requests per second
-		20,  // burst capacity
+		100, // requests per second
+		100,  // burst capacity
 	)
 
 	// Create database connection pool
