@@ -2,8 +2,10 @@ package utils
 
 import (
 	"encoding/hex"
+	"fmt"
 	"strconv"
 	"strings"
+	"time"
 
 	"golang.org/x/crypto/sha3"
 )
@@ -66,4 +68,26 @@ func ConvertToTopics(signatures [][]string) [][]string {
 // Normalize converts address to lower case and trim the first two character "0x"
 func Normalize(address string) string {
 	return strings.ToLower(strings.TrimPrefix(address, "0x"))
+}
+
+func FormatNumber(n uint64) string {
+    if n >= 1_000_000 {
+        return fmt.Sprintf("%.1fM", float64(n)/1_000_000)
+    }
+    if n >= 1_000 {
+        return fmt.Sprintf("%.1fK", float64(n)/1_000)
+    }
+    return fmt.Sprintf("%d", n)
+}
+
+func FormatDuration(d time.Duration) string {
+    if d < time.Minute {
+        return fmt.Sprintf("%ds", int(d.Seconds()))
+    }
+    if d < time.Hour {
+        return fmt.Sprintf("%dm", int(d.Minutes()))
+    }
+    hours := int(d.Hours())
+    mins := int(d.Minutes()) % 60
+    return fmt.Sprintf("%dh %dm", hours, mins)
 }

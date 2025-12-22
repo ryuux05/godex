@@ -117,7 +117,7 @@ func (h *ERC20Handler) handleApproval(ctx context.Context, tx pgx.Tx, event type
 func main() {
 	// Setup structured logging
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
-		Level: slog.LevelDebug,
+		Level: slog.LevelInfo,
 	}))
 
 	// Get configuration from environment

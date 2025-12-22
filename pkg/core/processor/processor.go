@@ -44,29 +44,9 @@ type chainState struct {
 
 	// options for processor
 	opts *Options
-}
 
-type chainProgress struct {
-    mu sync.RWMutex
-    
-    // Sync start state
-    syncStartTime  time.Time
-    syncStartBlock uint64
-    
-    // Current state (updated by processor)
-    currentBlock   uint64
-    eventsStored   uint64
-    
-    // Last log state (for calculating speeds)
-    lastLogTime    time.Time
-    lastLogBlock   uint64
-    lastLogEvents  uint64
-    
-    // Head (updated periodically)
-    headBlock      uint64
-    
-    // Status
-    isLive         bool
+	//chain Progress
+	progress *chainProgress
 }
 
 type Processor struct {
@@ -238,6 +218,7 @@ func (p *Processor) addChain(chain ChainInfo, opts *Options, blockNum uint64, bl
 		topics:             topics,
 		addresses:          addresses,
 		addressSet:         addressSet,
+		progress: NewChainProgress(cursor.BlockNum),
 	}
 
 	p.chains[chain.ChainId] = chainState
@@ -310,6 +291,7 @@ outer:
 			rpcCancel()
 			return err
 		}
+		chain.progress.SetHead(head)
 
 		// look for block confimation
 		var conf uint64
@@ -516,10 +498,32 @@ outer:
 			windowTimestamps := make(map[uint64]map[uint64]uint64) // from -> (blockNum -> timestamp)
 			next := chain.cursor.BlockNum + 1
 
+			// Progress logging ticker
+			progressTicker := time.NewTicker(30 * time.Second)
+			defer progressTicker.Stop()
+
 			for {
 				select {
 				case <-rpcCtx.Done():
 					return
+				case <-progressTicker.C:
+					// Take snapshot and log
+					snapshot := chain.progress.Snapshot()
+					status := "syncing"
+					if chain.isLive {
+						status = "live"
+					}
+					p.logger.Info(fmt.Sprintf("[%s] Block %s | %.1f%% | %.0f blk/s | ETA %s | %s events",
+						chain.chainInfo.ChainId,
+						utils.FormatNumber(snapshot.current),
+						snapshot.progressPct,
+						snapshot.blockPerSec,
+						snapshot.eta,
+						utils.FormatNumber(snapshot.events),
+					), slog.String("status", status))
+					
+					// Reset window for next calculation
+					chain.progress.ResetLogWindow()
 				case dm, ok := <-doneCh:
 					if !ok {
 						return
@@ -622,12 +626,15 @@ outer:
 										return
 									}
 								}
+								//update progress
+								chain.progress.Update(end, chain.progress.eventsStored + uint64(len(events)))
 							}
 
 							delete(windowLogs, next)
 							delete(windowTimestamps, next)
 							delete(window, next)
 							chain.cursor.BlockNum = end
+							
 							next = end + 1
 
 							lag := head - chain.cursor.BlockNum
