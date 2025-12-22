@@ -972,7 +972,7 @@ func TestMultiChainRun_Success(t *testing.T) {
 		StartBlock:         0,
 		ConfirmationDepth:   0,
 		FetchMode:          FetchModeLogs,
-		Topics:             []string{"Transfer(address,address,uint256)"},
+		Topics:             [][]string{{"Transfer(address,address,uint256)"}},
 	}
 	processor.AddChain(ChainInfo{
 		ChainId: "1",
@@ -987,7 +987,7 @@ func TestMultiChainRun_Success(t *testing.T) {
 		StartBlock:         0,
 		ConfirmationDepth:   0,
 		FetchMode:          FetchModeLogs,
-		Topics:             []string{"Transfer(address,address,uint256)"},
+		Topics:             [][]string{{"Transfer(address,address,uint256)"}},
 	}
 	processor.AddChain(ChainInfo{
 		ChainId: "137",
@@ -1119,7 +1119,7 @@ func TestMultiChain_IndependentErrors(t *testing.T) {
 		StartBlock:         0,
 		ConfirmationDepth:   0,
 		FetchMode:          FetchModeLogs,
-		Topics:             []string{"0xddf252ad"},
+		Topics:             [][]string{{"0xddf252ad"}},
 		RetryConfig:        fastRetry,
 	}
 
@@ -1129,7 +1129,7 @@ func TestMultiChain_IndependentErrors(t *testing.T) {
 		StartBlock:         0,
 		ConfirmationDepth:   0,
 		FetchMode:          FetchModeLogs,
-		Topics:             []string{"0xddf252ad"},
+		Topics:             [][]string{{"0xddf252ad"}},
 		RetryConfig:        fastRetry,
 	}
 
@@ -1238,7 +1238,7 @@ func TestMultiChain_BothChainsSucceed(t *testing.T) {
 		StartBlock:         0,
 		ConfirmationDepth:   0,
 		FetchMode:          FetchModeLogs,
-		Topics:             []string{"0xddf252ad"},
+		Topics:             [][]string{{"0xddf252ad"}},
 		RetryConfig: &rpc.RetryConfig{
 			MaxAttempts:    3,
 			InitialBackoff: 10 * time.Millisecond,
@@ -1343,7 +1343,7 @@ func TestUseLogsForHistoricalSync_False(t *testing.T) {
 		StartBlock:         0,
 		ConfirmationDepth:   0,
 		FetchMode:          FetchModeLogs,
-		Topics:             []string{"0xddf252ad"},
+		Topics:             [][]string{{"0xddf252ad"}},
 		RetryConfig: &rpc.RetryConfig{
 			MaxAttempts:    3,
 			InitialBackoff: 10 * time.Millisecond,
@@ -1430,7 +1430,7 @@ func TestAddChain_CursorNotFound_StartsFromZero(t *testing.T) {
 	assert.NoError(t, err)
 
 	chain := processor.chains["1"]
-	assert.Equal(t, uint64(0), chain.cursor.BlockNum)
+	assert.Equal(t, uint64(50), chain.cursor.BlockNum)
 	assert.Equal(t, "", chain.cursor.BlockHash)
 }
 

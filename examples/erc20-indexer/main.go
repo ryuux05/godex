@@ -188,9 +188,9 @@ func main() {
 		StartBlock:         startBlock,
 		ConfirmationDepth:  45,   // wait for confirmations
 		EnableTimestamps:   true, // include block timestamps
-		Topics: []string{
-			"0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef", // Transfer(address,address,uint256)
-			// Approval(address,address,uint256)
+		Topics: [][]string{
+			{"0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"}, // Transfer(address,address,uint256)
+			{"0x8c5be1e5ebec7d5bd14f71427d1e84f3dd0314c0f7b2291e5b200ac8c7c3b925"},// Approval(address,address,uint256)
 		},
 		FetchMode:                core.FetchModeLogs,
 		UseLogsForHistoricalSync: true,

@@ -364,6 +364,7 @@ outer:
 					if !chain.isLive && chain.opts.UseLogsForHistoricalSync {
 						mode = FetchModeLogs
 					}
+
 					// When the chain is live
 					err = rpc.RetryWithBackoff(rpcCtx, *chain.opts.RetryConfig, func() error {
 						switch mode {
@@ -775,11 +776,23 @@ func (p *Processor) matchesTopicFilter(log types.Log, chain *chainState) bool {
 	}
 
 	// Match first topic (event signature)
-	for _, filterTopic := range chain.topics {
-		if len(log.Topics) > 0 {
-			logTopic := log.Topics[0]
-			if logTopic == filterTopic {
-				return true
+	for i, filterTopics := range chain.topics {
+		// Empty filter at this position means "match any"
+		if len(filterTopics) == 0 {
+			continue
+		}
+
+		// Log doesn't have enough topics for this filter position
+		if i >= len(log.Topics) {
+			return false
+		}
+
+		for _, topic0 := range filterTopics {
+			if len(log.Topics) > 0 {
+				logTopic := log.Topics[0]
+				if logTopic == topic0 {
+					return true
+				}
 			}
 		}
 	}
