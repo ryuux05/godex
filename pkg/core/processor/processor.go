@@ -91,11 +91,11 @@ func NewProcessor(m metrics.Metrics, s sink.Sink) *Processor {
 func (p *Processor) AddChain(chain ChainInfo, opts *Options, decoder decoder.Decoder) error {
 	blockNum, blockHash, err := p.sink.LoadCursor(context.Background(), chain.ChainId)
 	p.logger.Info("cursor loaded from sink",
-        slog.String("chain_id", chain.ChainId),
-        slog.Uint64("loaded_block_num", blockNum),
-        slog.String("loaded_block_hash", blockHash),
-        slog.Uint64("start_block", opts.StartBlock),
-        slog.Any("error", err))
+		slog.String("chain_id", chain.ChainId),
+		slog.Uint64("loaded_block_num", blockNum),
+		slog.String("loaded_block_hash", blockHash),
+		slog.Uint64("start_block", opts.StartBlock),
+		slog.Any("error", err))
 
 	if err != nil {
 		// If cursor not found (clean db), start from block 0
@@ -218,7 +218,7 @@ func (p *Processor) addChain(chain ChainInfo, opts *Options, blockNum uint64, bl
 		topics:             topics,
 		addresses:          addresses,
 		addressSet:         addressSet,
-		progress: NewChainProgress(cursor.BlockNum),
+		progress:           NewChainProgress(cursor.BlockNum),
 	}
 
 	p.chains[chain.ChainId] = chainState
@@ -249,30 +249,53 @@ func (p *Processor) IsLive(chainId string) (bool, error) {
 }
 
 func (p *Processor) runChain(ctx context.Context, chain *chainState) error {
+	// Check for processor continuation.
+	if chain.cursor.BlockNum > 0 && chain.cursor.BlockHash != "" {
+		rpcCtx, rpcCancel := context.WithCancel(ctx)
+
+		err := rpc.RetryWithBackoff(rpcCtx, *chain.opts.RetryConfig, func() error {
+			var b types.Block
+			blockNum := utils.Uint64ToHexQty(chain.cursor.BlockNum)
+
+			b, err := chain.chainInfo.RPC.GetBlock(rpcCtx, blockNum)
+			if err != nil {
+				return err
+			}
+
+			if b.Hash != chain.cursor.BlockHash {
+				p.logger.Warn("cursor hash mismatch, handling reorg",
+					slog.String("chain_id", chain.chainInfo.ChainId),
+					slog.String("expected", chain.cursor.BlockHash),
+					slog.String("actual", b.Hash))
+
+				ancestor := p.handleReorg(rpcCtx, chain)
+
+				ancestorBlock, err := chain.chainInfo.RPC.GetBlock(rpcCtx, utils.Uint64ToHexQty(ancestor))
+				if err != nil {
+					return err
+				}
+
+				chain.cursor.BlockNum = ancestor
+				chain.cursor.BlockHash = ancestorBlock.Hash
+
+				if err := p.sink.Rollback(rpcCtx, chain.chainInfo.ChainId, ancestor, ancestorBlock.Hash); err != nil {
+					p.logger.Error("failed to rollback sink", slog.String("chain_id", chain.chainInfo.ChainId), slog.Any("error", err))
+				}
+			}
+			return nil
+		})
+		rpcCancel()
+
+		if err != nil {
+			return err
+		}
+	}
+
+	p.logger.Info("entering outer loop")
+
 outer:
 	for {
 		rpcCtx, rpcCancel := context.WithCancel(ctx)
-
-		// Check for processor continuation.
-		if chain.cursor.BlockNum > 0 && chain.cursor.BlockHash != "" {
-			err := rpc.RetryWithBackoff(rpcCtx, *chain.opts.RetryConfig, func() error {
-				var err error
-				var b types.Block
-				blockNum := utils.Uint64ToHexQty(chain.cursor.BlockNum)
-				b, err = chain.chainInfo.RPC.GetBlock(rpcCtx, blockNum)
-				if b.Hash != chain.cursor.BlockHash {
-					p.handleReorg(rpcCtx, chain)
-				}
-
-				return err
-			})
-
-			if err != nil {
-				rpcCancel()
-				return err
-			}
-		}
-
 		// compute for new head
 		var headHex string
 		err := rpc.RetryWithBackoff(rpcCtx, *chain.opts.RetryConfig, func() error {
@@ -386,7 +409,7 @@ outer:
 								Topics:    chain.topics,
 								Address:   chain.addresses,
 							}
-							
+
 							// Record fetch time
 							logs, err = chain.chainInfo.RPC.GetLogs(rpcCtx, filter)
 
@@ -485,14 +508,21 @@ outer:
 		done := make(chan struct{})
 		go func() {
 			wg.Wait()
-			close(doneCh)
+			//close(doneCh)
 			close(done)
 		}()
 
 		// goroutine to check job windows and cursor strategy
 		arbiterDone := make(chan struct{})
 		go func() {
-			defer close(arbiterDone)
+			defer func() {
+				if r := recover(); r != nil {
+					p.logger.Error("ARBITER PANICKED", slog.Any("panic", r))
+				}
+				p.logger.Info("ARBITER EXITING")  // ADD - see when it exits
+				close(arbiterDone)
+			}()
+
 			window := make(map[uint64]uint64)
 			windowLogs := make(map[uint64][]types.Log)
 			windowTimestamps := make(map[uint64]map[uint64]uint64) // from -> (blockNum -> timestamp)
@@ -505,6 +535,7 @@ outer:
 			for {
 				select {
 				case <-rpcCtx.Done():
+					p.logger.Debug("arbiter exit: rpcCtx cancelled")
 					return
 				case <-progressTicker.C:
 					// Take snapshot and log
@@ -521,11 +552,12 @@ outer:
 						snapshot.eta,
 						utils.FormatNumber(snapshot.events),
 					), slog.String("status", status))
-					
+
 					// Reset window for next calculation
 					chain.progress.ResetLogWindow()
 				case dm, ok := <-doneCh:
 					if !ok {
+						p.logger.Debug("arbiter exit: doneCh closed") 
 						return
 					}
 
@@ -578,13 +610,15 @@ outer:
 								block, err := chain.chainInfo.RPC.GetBlock(rpcCtx, utils.Uint64ToHexQty(ancestor))
 								if err == nil {
 									ancestorHash = block.Hash
-								}	
+								}
 							}
 							if err := p.sink.Rollback(rpcCtx, chain.chainInfo.ChainId, ancestor, ancestorHash); err != nil {
 								p.logger.Error("failed to rollback sink", slog.String("chain_id", chain.chainInfo.ChainId), slog.Any("error", err))
 							}
 
 							chain.cursor.BlockNum = ancestor
+							chain.cursor.BlockHash = ancestorHash
+							p.logger.Debug("arbiter exit: reorg rollback")
 							return
 
 						} else {
@@ -596,6 +630,9 @@ outer:
 
 								dec := p.decoder[chain.chainInfo.ChainId]
 								for _, l := range logs {
+									p.logger.Debug("attempting decode",
+										slog.String("address", l.Address),
+										slog.String("topic0", l.Topics[0]))
 									event, err := dec.Decode(chain.chainInfo.Name, chain.chainInfo.ChainId, l)
 									if err != nil {
 										p.logger.Warn("failed to decode log", slog.String("chain_id", chain.chainInfo.ChainId), slog.Any("error", err))
@@ -618,6 +655,7 @@ outer:
 								// Store events to sink
 								if len(events) > 0 {
 									if err := p.sink.Store(rpcCtx, events); err != nil {
+										p.logger.Debug("arbiter exit: store failed")
 										p.logger.Error("failed to store events", slog.String("chain_id", chain.chainInfo.ChainId), slog.Any("error", err))
 										select {
 										case errCh <- err:
@@ -627,14 +665,14 @@ outer:
 									}
 								}
 								//update progress
-								chain.progress.Update(end, chain.progress.eventsStored + uint64(len(events)))
+								chain.progress.Update(end, chain.progress.eventsStored+uint64(len(events)))
 							}
 
 							delete(windowLogs, next)
 							delete(windowTimestamps, next)
 							delete(window, next)
 							chain.cursor.BlockNum = end
-							
+
 							next = end + 1
 
 							lag := head - chain.cursor.BlockNum
@@ -670,6 +708,7 @@ outer:
 		for {
 			select {
 			case <-rpcCtx.Done():
+				p.logger.Debug("arbiter exit: rpcCtx cancelled") 
 				<-done
 				<-arbiterDone
 				continue outer
@@ -685,8 +724,11 @@ outer:
 				// Retry the batch when error received
 				p.logger.Warn("restarting batch after error")
 				time.Sleep(5 * time.Second)
+
+				// Reset chain progress
+				chain.progress.ResetLogWindow()
 				continue outer
-				
+
 			case <-ctx.Done():
 				rpcCancel()
 				<-done

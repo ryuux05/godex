@@ -117,13 +117,13 @@ func (h *ERC20Handler) handleApproval(ctx context.Context, tx pgx.Tx, event type
 func main() {
 	// Setup structured logging
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
-		Level: slog.LevelInfo,
+		Level: slog.LevelDebug,
 	}))
 
 	// Get configuration from environment
 	rpcURL := getEnv("RPC_URL", "https://eth-mainnet.g.alchemy.com/v2/demo")
 	databaseURL := getEnv("DATABASE_URL", "postgres://godex:password@localhost:5432/godex?sslmode=disable")
-	startBlock := getEnvUint64("START_BLOCK", 0)
+	startBlock := getEnvUint64("START_BLOCK", 10819611)
 
 	logger.Info("initializing ERC20 indexer",
 		slog.String("rpc_url", rpcURL),
@@ -184,10 +184,10 @@ func main() {
 
 	// Configure indexing options
 	opts := &core.Options{
-		RangeSize:          5, // blocks per batch
-		FetcherConcurrency: 20,    // concurrent fetchers
+		RangeSize:          1, // blocks per batch
+		FetcherConcurrency: 1,    // concurrent fetchers
 		StartBlock:         startBlock,
-		ConfirmationDepth:  45,   // wait for confirmations
+		ConfirmationDepth:  5,   // wait for confirmations
 		EnableTimestamps:   true, // include block timestamps
 		Topics: [][]string{
 			{"0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef", // Transfer(address,address,uint256)
