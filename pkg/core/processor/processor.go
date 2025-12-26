@@ -249,51 +249,12 @@ func (p *Processor) IsLive(chainId string) (bool, error) {
 }
 
 func (p *Processor) runChain(ctx context.Context, chain *chainState) error {
-	// Check for processor continuation.
-	if chain.cursor.BlockNum > 0 && chain.cursor.BlockHash != "" {
-		rpcCtx, rpcCancel := context.WithCancel(ctx)
-
-		err := rpc.RetryWithBackoff(rpcCtx, *chain.opts.RetryConfig, func() error {
-			var b types.Block
-			blockNum := utils.Uint64ToHexQty(chain.cursor.BlockNum)
-
-			b, err := chain.chainInfo.RPC.GetBlock(rpcCtx, blockNum)
-			if err != nil {
-				return err
-			}
-
-			if b.Hash != chain.cursor.BlockHash {
-				p.logger.Warn("cursor hash mismatch, handling reorg",
-					slog.String("chain_id", chain.chainInfo.ChainId),
-					slog.String("expected", chain.cursor.BlockHash),
-					slog.String("actual", b.Hash))
-
-				ancestor := p.handleReorg(rpcCtx, chain)
-
-				ancestorBlock, err := chain.chainInfo.RPC.GetBlock(rpcCtx, utils.Uint64ToHexQty(ancestor))
-				if err != nil {
-					return err
-				}
-
-				chain.cursor.BlockNum = ancestor
-				chain.cursor.BlockHash = ancestorBlock.Hash
-
-				if err := p.sink.Rollback(rpcCtx, chain.chainInfo.ChainId, ancestor, ancestorBlock.Hash); err != nil {
-					p.logger.Error("failed to rollback sink", slog.String("chain_id", chain.chainInfo.ChainId), slog.Any("error", err))
-				}
-			}
-			return nil
-		})
-		rpcCancel()
-
-		if err != nil {
-			return err
-		}
+	// Check chain cursor during resume
+	if err := p.checkCursorOnResume(ctx, chain); err != nil {
+		return err
 	}
 
-	p.logger.Info("entering outer loop")
-
-outer:
+	// Main loop
 	for {
 		rpcCtx, rpcCancel := context.WithCancel(ctx)
 		// compute for new head
@@ -375,13 +336,6 @@ outer:
 		var wg sync.WaitGroup
 		wg.Add(fetchWorker)
 		errCh := make(chan error, 1)
-
-		type doneMsg struct {
-			from       uint64
-			to         uint64
-			logs       []types.Log
-			timestamps map[uint64]uint64 // blockNumber -> timestamp (only if EnableTimestamps)
-		}
 
 		doneCh := make(chan doneMsg, fetchWorker)
 
@@ -740,6 +694,57 @@ outer:
 	}
 }
 
+// Function to check cursor on resume
+func (p *Processor) checkCursorOnResume(ctx context.Context, chain *chainState) error {
+	if chain.cursor.BlockNum > 0 && chain.cursor.BlockHash != "" {
+		rpcCtx, rpcCancel := context.WithCancel(ctx)
+
+		err := rpc.RetryWithBackoff(rpcCtx, *chain.opts.RetryConfig, func() error {
+			var b types.Block
+			blockNum := utils.Uint64ToHexQty(chain.cursor.BlockNum)
+
+			b, err := chain.chainInfo.RPC.GetBlock(rpcCtx, blockNum)
+			if err != nil {
+				return err
+			}
+
+			if b.Hash != chain.cursor.BlockHash {
+				p.logger.Warn("cursor hash mismatch, handling reorg",
+					slog.String("chain_id", chain.chainInfo.ChainId),
+					slog.String("expected", chain.cursor.BlockHash),
+					slog.String("actual", b.Hash))
+
+				ancestor := p.handleReorg(rpcCtx, chain)
+
+				ancestorBlock, err := chain.chainInfo.RPC.GetBlock(rpcCtx, utils.Uint64ToHexQty(ancestor))
+				if err != nil {
+					return err
+				}
+
+				chain.cursor.BlockNum = ancestor
+				chain.cursor.BlockHash = ancestorBlock.Hash
+
+				if err := p.sink.Rollback(rpcCtx, chain.chainInfo.ChainId, ancestor, ancestorBlock.Hash); err != nil {
+					p.logger.Error("failed to rollback sink", slog.String("chain_id", chain.chainInfo.ChainId), slog.Any("error", err))
+				}
+			}
+			return nil
+		})
+		rpcCancel()
+
+		return err
+	}
+	return nil
+}
+
+// Function to process a batch of block for every main loop
+func (p *Processor) processBatch(ctx context.Context, chain *chainState) error {
+
+}
+
+func (p *Processor) fetchBatch(ctx context.Context, chain *chainState) ([]types.Log, error) {
+
+}
 // During ancestor lookup we start from the cursor window and get to the window head and compare to the previous window
 func (p *Processor) handleReorg(ctx context.Context, chain *chainState) uint64 {
 	ancestor := chain.cursor.BlockNum
