@@ -11,5 +11,4 @@ type FetchResult struct {
     Range      BlockRange
     Logs       []types.Log
     Timestamps map[uint64]uint64
-    Err        error
 }
