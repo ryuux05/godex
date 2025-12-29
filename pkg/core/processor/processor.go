@@ -473,7 +473,7 @@ func (p *Processor) runChain(ctx context.Context, chain *chainState) error {
 				if r := recover(); r != nil {
 					p.logger.Error("ARBITER PANICKED", slog.Any("panic", r))
 				}
-				p.logger.Info("ARBITER EXITING")  // ADD - see when it exits
+				p.logger.Info("ARBITER EXITING") // ADD - see when it exits
 				close(arbiterDone)
 			}()
 
@@ -485,7 +485,6 @@ func (p *Processor) runChain(ctx context.Context, chain *chainState) error {
 			// Progress logging ticker
 			progressTicker := time.NewTicker(30 * time.Second)
 			defer progressTicker.Stop()
-
 			for {
 				select {
 				case <-rpcCtx.Done():
@@ -511,7 +510,7 @@ func (p *Processor) runChain(ctx context.Context, chain *chainState) error {
 					chain.progress.ResetLogWindow()
 				case dm, ok := <-doneCh:
 					if !ok {
-						p.logger.Debug("arbiter exit: doneCh closed") 
+						p.logger.Debug("arbiter exit: doneCh closed")
 						return
 					}
 
@@ -662,7 +661,7 @@ func (p *Processor) runChain(ctx context.Context, chain *chainState) error {
 		for {
 			select {
 			case <-rpcCtx.Done():
-				p.logger.Debug("arbiter exit: rpcCtx cancelled") 
+				p.logger.Debug("arbiter exit: rpcCtx cancelled")
 				<-done
 				<-arbiterDone
 				continue outer
@@ -739,12 +738,27 @@ func (p *Processor) checkCursorOnResume(ctx context.Context, chain *chainState) 
 
 // Function to process a batch of block for every main loop
 func (p *Processor) processBatch(ctx context.Context, chain *chainState) error {
+	batchCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	// Plan job
+	jobs, target, err := p.planJobs(ctx, chain)
+	if err != nil {
+		return err
+	}
+
+	// Check to see if the batch is already done, return if true to get new batch
+	if chain.cursor.BlockNum >= target {
+		return nil
+	}
+
 
 }
 
 func (p *Processor) fetchBatch(ctx context.Context, chain *chainState) ([]types.Log, error) {
 
 }
+
 // During ancestor lookup we start from the cursor window and get to the window head and compare to the previous window
 func (p *Processor) handleReorg(ctx context.Context, chain *chainState) uint64 {
 	ancestor := chain.cursor.BlockNum

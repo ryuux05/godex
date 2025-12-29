@@ -2,6 +2,7 @@ package processor
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 
 	"github.com/ryuux05/godex/pkg/core/rpc"
@@ -15,25 +16,32 @@ func (p *Processor) fetchAll(ctx context.Context, chain *chainState, jobs <-chan
 	g := new(errgroup.Group)
 	for i := 0; i < chain.opts.FetcherConcurrency; i++ {
 		g.Go(func() error {
-			p.fetchWorker(ctx, chain, jobs, results)
-			return nil
+			return p.fetchWorker(ctx, chain, jobs, results)
 		})
 	}
-	if err := g.Wait(); err != nil {
-        // Handle error
-    }
+	go func() {
+        if err := g.Wait(); err != nil {
+            p.logger.Error("fetch worker failed", slog.Any("error", err))
+        }
+        close(results)
+    }()
+    
+    return results, nil
 }
 
 func (p *Processor) fetchWorker(ctx context.Context, chain *chainState, jobs <-chan BlockRange, results chan<- FetchResult) error {
 	for job := range jobs {
         result, err := p.fetch(ctx, chain, job)
-        
+		if err != nil {
+            return err 
+        }
         select {
         case <-ctx.Done():
-            return
+            return ctx.Err()
         case results <- result:
         }
     }
+	return nil
 }
 
 func (p *Processor) fetch(ctx context.Context, chain *chainState, job BlockRange) (FetchResult, error) {
@@ -68,23 +76,26 @@ func (p *Processor) fetch(ctx context.Context, chain *chainState, job BlockRange
 	})
 
 	if err != nil {
-		return FetchResult{Range: job, Err: err}
+		return FetchResult{Range: job}, err
 	}
 
 	// Fetch timestamps if enabled
     var timestamps map[uint64]uint64
     if chain.opts.EnableTimestamps && len(logs) > 0 {
-        timestamps = p.fetchTimestamps(ctx, chain, logs)
+        timestamps, err = p.fetchTimestamps(ctx, chain, logs)
+		if err != nil {
+			return FetchResult{Range: job}, err
+		}
     }
     
     return FetchResult{
         Range:      job,
         Logs:       logs,
         Timestamps: timestamps,
-    }
+    }, nil
 }
 
-func (p *Processor) fetchTimestamps(ctx context.Context, chain *chainState, logs[]types.Log) map[uint64]uint64 {
+func (p *Processor) fetchTimestamps(ctx context.Context, chain *chainState, logs[]types.Log) (map[uint64]uint64, error) {
 	// Collect unique block numbers
 	uniqueBlocks := make(map[uint64]struct{})
 	for _, l := range logs {
@@ -104,43 +115,31 @@ func (p *Processor) fetchTimestamps(ctx context.Context, chain *chainState, logs
 
 	// Try batch fetch first, fall back to individual calls
 	timestamps := make(map[uint64]uint64)
-	blocks, err := chain.chainInfo.RPC.GetBlocks(ctx, blockNumbers)
-	if err != nil {
-		p.logger.Warn("batch GetBlocks failed, falling back to individual calls", slog.Any("error", err))
-		// Fall back to individual GetBlock calls
-		for _, hexBn := range blockNumbers {
-			bn, err := utils.HexQtyToUint64(hexBn)
-			if err != nil {
-				p.logger.Warn("failed to parse block number", slog.String("block_number", hexBn), slog.Any("error", err))
-				continue
-			}
-			block, err := chain.chainInfo.RPC.GetBlock(ctx, hexBn)
-			if err != nil {
-				p.logger.Warn("failed to fetch block", slog.String("block_number", hexBn), slog.Any("error", err))
-				continue
-			}
-			ts, err := utils.HexQtyToUint64(block.Timestamp)
-			if err != nil {
-				p.logger.Warn("failed to parse timestamp", slog.String("block_number", hexBn), slog.Any("error", err))
-				continue
-			}
-			timestamps[bn] = ts
-		}
-	} else {
-		// Process batch results
-		for hexBn, blk := range blocks {
-			bn, err := utils.HexQtyToUint64(hexBn)
-			if err != nil {
-				p.logger.Warn("failed to parse block number", slog.String("block_number", hexBn), slog.Any("error", err))
-				continue
-			}
-			ts, err := utils.HexQtyToUint64(blk.Timestamp)
-			if err != nil {
-				p.logger.Warn("failed to parse timestamp", slog.Uint64("block_number", bn), slog.Any("error", err))
-				continue
-			}
-			timestamps[bn] = ts
-		}
+	// Try batch first with retry
+    var blocks map[string]types.Block
+    err := rpc.RetryWithBackoff(ctx, *chain.opts.RetryConfig, func() error {
+        var err error
+        blocks, err = chain.chainInfo.RPC.GetBlocks(ctx, blockNumbers)
+        return err
+    })
+
+	 
+    if err != nil {
+        return nil, fmt.Errorf("failed to get timestamp blocks: %w", err)
+    }
+    
+	// Process batch results
+	for hexBn, blk := range blocks {
+		bn, err := utils.HexQtyToUint64(hexBn)
+		if err != nil {
+            return nil, fmt.Errorf("parse block number %s: %w", hexBn, err)
+        }
+		ts, err := utils.HexQtyToUint64(blk.Timestamp)
+		if err != nil {
+            return nil, fmt.Errorf("parse timestamp for block %d: %w", bn, err)
+        }
+		timestamps[bn] = ts
 	}
-	return timestamps
+	
+	return timestamps, nil
 }
