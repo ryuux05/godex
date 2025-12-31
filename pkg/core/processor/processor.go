@@ -248,6 +248,29 @@ func (p *Processor) IsLive(chainId string) (bool, error) {
 	return p.chains[chainId].isLive, nil
 }
 
+func (p *Processor) runChain_(ctx context.Context, chain *chainState) error {
+	// Check chain cursor during resume
+	if err := p.checkCursorOnResume(ctx, chain); err != nil {
+		return err
+	}
+
+	// Main loop
+	for {
+		select {
+		case <- ctx.Done():
+			return nil
+		default:
+		}
+
+		if err := p.processBatch(ctx, chain); err != nil {
+			p.logger.Error("batch failed", slog.Any("error", err))
+			time.Sleep(5 * time.Second)
+			chain.progress.ResetLogWindow()
+		}
+	}
+	
+}
+
 func (p *Processor) runChain(ctx context.Context, chain *chainState) error {
 	// Check chain cursor during resume
 	if err := p.checkCursorOnResume(ctx, chain); err != nil {
@@ -693,6 +716,60 @@ func (p *Processor) runChain(ctx context.Context, chain *chainState) error {
 	}
 }
 
+// Function to process a batch of block for every main loop
+func (p *Processor) processBatch(ctx context.Context, chain *chainState) error {
+	batchCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	// Plan job and return jobs channel that will be consumed by fetcher
+	jobs, target, err := p.planJobs(ctx, chain)
+	if err != nil {
+		return err
+	}
+	
+	// Fetch the job that has been planned and return the results
+	results, err := p.fetchAll(ctx, chain, jobs)
+	if err != nil {
+		return fmt.Errorf("failed to fetch block: %w", err)
+	}
+
+	// Prosess the resutls that are produced
+	for _, result := range results {
+		p.processWindow()
+	
+}
+
+// Arbiter will process the fetch result from fetcher, and pass it to processWindow in orders
+func (p *Processor) arbiter(ctx context.Context, chain*chainState, result <-chan FetchResult, head uint64) error {
+	// Progress logging ticker
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+	
+	// Main loop
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-ticker.C:
+			p.logProgress(chain)
+		default:
+			if err := p.processBatch(ctx, chain); err != nil {
+				p.logger.Error("batch failed", slog.Any("error", err))
+				time.Sleep(5 * time.Second)
+				chain.progress.ResetLogWindow()
+			}
+		}
+	}
+
+
+}
+
+// Process the window that was created by arbiter.
+// In here decoding, storing, reorg handling will happen.
+func (p *Processor) processWindow(ctx context.Context, chain *chainState, result <-chain FetchResult, head uint64) error {
+	
+}
+
 // Function to check cursor on resume
 func (p *Processor) checkCursorOnResume(ctx context.Context, chain *chainState) error {
 	if chain.cursor.BlockNum > 0 && chain.cursor.BlockHash != "" {
@@ -736,28 +813,6 @@ func (p *Processor) checkCursorOnResume(ctx context.Context, chain *chainState) 
 	return nil
 }
 
-// Function to process a batch of block for every main loop
-func (p *Processor) processBatch(ctx context.Context, chain *chainState) error {
-	batchCtx, cancel := context.WithCancel(ctx)
-	defer cancel()
-
-	// Plan job
-	jobs, target, err := p.planJobs(ctx, chain)
-	if err != nil {
-		return err
-	}
-
-	// Check to see if the batch is already done, return if true to get new batch
-	if chain.cursor.BlockNum >= target {
-		return nil
-	}
-
-
-}
-
-func (p *Processor) fetchBatch(ctx context.Context, chain *chainState) ([]types.Log, error) {
-
-}
 
 // During ancestor lookup we start from the cursor window and get to the window head and compare to the previous window
 func (p *Processor) handleReorg(ctx context.Context, chain *chainState) uint64 {
@@ -904,3 +959,28 @@ func (p *Processor) matchesTopicFilter(log types.Log, chain *chainState) bool {
 
 	return false
 }
+
+func (p *Processor) logProgress(chain *chainState) {
+
+	// Take snapshot and log
+	snapshot := chain.progress.Snapshot()
+	status := "syncing"
+
+	if chain.isLive {
+		status = "live"
+	}
+
+	p.logger.Info(fmt.Sprintf("[%s] Block %s | %.1f%% | %.0f blk/s | ETA %s | %s events",
+		chain.chainInfo.ChainId,
+		utils.FormatNumber(snapshot.current),
+		snapshot.progressPct,
+		snapshot.blockPerSec,
+		snapshot.eta,
+		utils.FormatNumber(snapshot.events),
+	), slog.String("status", status))
+
+	// Reset window for next calculation
+	chain.progress.ResetLogWindow()
+}
+
+

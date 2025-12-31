@@ -143,3 +143,70 @@ func (p *Processor) fetchTimestamps(ctx context.Context, chain *chainState, logs
 	
 	return timestamps, nil
 }
+
+
+// Helper function to get logs from receipts
+func (p *Processor) fetchLogsFromReceipts(ctx context.Context, from uint64, to uint64, chain *chainState) ([]types.Log, error) {
+	var allLogs []types.Log
+	for blockNum := from; blockNum <= to; blockNum++ {
+		s_blockNum := utils.Uint64ToHexQty(blockNum)
+		receipts, err := chain.chainInfo.RPC.GetBlockReceipts(ctx, s_blockNum)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get receipts for block %d: %w", blockNum, err)
+		}
+
+		for _, receipt := range receipts {
+			for _, log := range receipt.Logs {
+
+				if _, ok := chain.addressSet[utils.Normalize(log.Address)]; !ok {
+					continue
+				}
+
+				if !p.matchesTopicFilter(log, chain) {
+					continue
+				}
+
+				allLogs = append(allLogs, log)
+			}
+		}
+	}
+	return allLogs, nil
+}
+
+// Checks if a log matches the configurated topic
+func (p *Processor) matchesTopicFilter(log types.Log, chain *chainState) bool {
+	// If there is no topic specified then its true by default
+	if len(chain.opts.Topics) == 0 {
+		return true
+	}
+
+	// Check if log has enough topics
+	if len(log.Topics) == 0 {
+		return false
+	}
+
+	// Match first topic (event signature)
+	for i, filterTopics := range chain.topics {
+		// Empty filter at this position means "match any"
+		if len(filterTopics) == 0 {
+			continue
+		}
+
+		// Log doesn't have enough topics for this filter position
+		if i >= len(log.Topics) {
+			return false
+		}
+
+		for _, topic0 := range filterTopics {
+			if len(log.Topics) > 0 {
+				logTopic := log.Topics[0]
+				if logTopic == topic0 {
+					return true
+				}
+			}
+		}
+	}
+
+	return false
+}
+
