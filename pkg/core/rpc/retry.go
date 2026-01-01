@@ -80,7 +80,7 @@ func RetryWithBackoff(ctx context.Context, config RetryConfig, fn func() error) 
 			wait = backoff + jitter
 		}
 
-		slog.Debug("retry attempt failed",
+		slog.Warn("retry attempt failed",
 			slog.Int("attempt", attempt+1),
 			slog.Int("max_attempts", config.MaxAttempts),
 			slog.Any("error", lastErr),
