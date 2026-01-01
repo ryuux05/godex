@@ -170,7 +170,7 @@ func (s *PGSink) Rollback(ctx context.Context, chainId string, toBlock uint64, b
         INSERT INTO chronicle_cursors (chain_id, block_num, block_hash)
         VALUES ($1, $2, $3)
         ON CONFLICT (chain_id)
-        DO UPDATE SET block_num = $2, block_hash = $3
+        DO UPDATE SET EXCLUDED.block_num = $2, EXCLUDED.block_hash = $3
     `, chainId, newBlock, blockHash)
 	if err != nil {
 		return fmt.Errorf("failed to update cursor: %w", err)
@@ -221,6 +221,40 @@ func (s *PGSink) LoadCursor(ctx context.Context, chainId string) (blockNum uint6
    }
 
 	return blockNum_row, blockHash_row, nil
+}
+
+
+func (s *PGSink) UpdateCursor(ctx context.Context, chainId string, newBlock uint64, blockHash string) error {
+	tx, err := s.db.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return fmt.Errorf("begin transaction: %w", err)
+	}
+
+	defer func() {
+		if err != nil {
+			_ = tx.Rollback(ctx)
+		}
+	}()
+
+	_, err = tx.Exec(ctx, `
+		INSERT INTO chronicle_cursors (chain_id, block_num, block_hash)
+		VALUES ($1, $2, $3)
+		ON CONFLICT (chain_id)
+		DO UPDATE SET EXCLUDED.block_num = $2, EXCLUDED.block_hash = $3
+	`, chainId, newBlock, blockHash)
+
+	if err != nil {
+		return fmt.Errorf("failed to update cursor: %w", err)
+	}
+
+	if err = tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit rollback: %w", err)
+	} 
+
+	// Metrics to set new indexedheight after rollback
+	s.metrics.SetIndexedHeight(chainId, newBlock)
+
+	return nil
 }
 
 func (s *PGSink) Migrate(ctx context.Context, sqlString string) error {

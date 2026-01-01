@@ -83,7 +83,7 @@ func NewProcessor(m metrics.Metrics, s sink.Sink) *Processor {
 		//logsCh:    make(map[string]chan types.Log),
 		metrics:   m,
 		sink:      s,
-		decoder:   make(map[string]decoder.Decoder),
+		router:  nil,
 		logger:    slog.Default(),
 		isRunning: false,
 	}
@@ -112,7 +112,7 @@ func (p *Processor) AddChain(chain ChainInfo, opts *Options, router *decoder.Dec
 		blockNum = 0
 	}
 
-	return p.addChain(chain, opts, blockNum, blockHash, decoder)
+	return p.addChain(chain, opts, blockNum, blockHash, router)
 }
 
 func (p *Processor) SetLogger(l *slog.Logger) {
@@ -146,7 +146,7 @@ func (p *Processor) Run(ctx context.Context) error {
 	return g.Wait()
 }
 
-func (p *Processor) addChain(chain ChainInfo, opts *Options, blockNum uint64, blockHash string, decoder decoder.Decoder) error {
+func (p *Processor) addChain(chain ChainInfo, opts *Options, blockNum uint64, blockHash string, router *decoder.DecoderRouter) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
@@ -224,7 +224,7 @@ func (p *Processor) addChain(chain ChainInfo, opts *Options, blockNum uint64, bl
 
 	p.chains[chain.ChainId] = chainState
 	//p.logsCh[chain.ChainId] = make(chan types.Log, opts.LogsBufferSize)
-	p.decoder[chain.ChainId] = decoder
+	p.router = router
 
 	return nil
 }
@@ -723,19 +723,19 @@ func (p *Processor) processBatch(ctx context.Context, chain *chainState) error {
 	defer cancel()
 
 	// Plan job and return jobs channel that will be consumed by fetcher
-	jobs, target, err := p.planJobs(ctx, chain)
+	jobs, head, err := p.planJobs(batchCtx, chain)
 	if err != nil {
 		return err
 	}
 	
 	// Fetch the job that has been planned and return the results
-	results, err := p.fetchAll(ctx, chain, jobs)
+	results, err := p.fetchAll(batchCtx, chain, jobs)
 	if err != nil {
 		return fmt.Errorf("failed to fetch block: %w", err)
 	}
 
 	// arbiter process the results in order
-	return p.arbiter(ctx, chain, results, head)
+	return p.arbiter(batchCtx, chain, results, head)
 }
 
 // Arbiter will process the fetch result from fetcher, and pass it to processWindow in orders
@@ -820,9 +820,30 @@ func (p *Processor) processWindow(ctx context.Context, chain *chainState, result
 	}
 
 	// Decode logs
-	
+	events := p.decodeLogs(ctx, chain, result)
+
+	// Store if there is event
+	// Else update the cursor
+	if len(events) > 0 {
+		if err := p.sink.Store(ctx, events); err != nil {
+			return err
+		} 
+	} else {
+		// Get blockhash
+		block, err := p.getBlockWithRetry(ctx, to, chain)
+		if err != nil {
+			return err
+		}
+		if err := p.sink.UpdateCursor(ctx, chain.chainInfo.ChainId, to, block.Hash); err != nil {
+			return err
+		}
+	}
+
+	return nil
 }
 
+// function to decode log into events along with timestamp
+// return empty events if there is no log
 func (p *Processor) decodeLogs(ctx context.Context, chain *chainState, fetchResult FetchResult) []types.Event {
 	// return immediately if there is no logs
 	if len(fetchResult.Logs) <= 0 {
@@ -865,13 +886,14 @@ func (p *Processor) decodeLogs(ctx context.Context, chain *chainState, fetchResu
 // Function to check cursor on resume
 func (p *Processor) checkCursorOnResume(ctx context.Context, chain *chainState) error {
 	if chain.cursor.BlockNum > 0 && chain.cursor.BlockHash != "" {
-		rpcCtx, rpcCancel := context.WithCancel(ctx)
+		ctx, cancel := context.WithCancel(ctx)
 
-		err := rpc.RetryWithBackoff(rpcCtx, *chain.opts.RetryConfig, func() error {
+		err := rpc.RetryWithBackoff(ctx, *chain.opts.RetryConfig, func() error {
 			var b types.Block
+			var err error
 			blockNum := utils.Uint64ToHexQty(chain.cursor.BlockNum)
 
-			b, err = chain.chainInfo.RPC.GetBlock(rpcCtx, blockNum)
+			b, err = chain.chainInfo.RPC.GetBlock(ctx, blockNum)
 			if err != nil {
 				return err
 			}
@@ -882,23 +904,18 @@ func (p *Processor) checkCursorOnResume(ctx context.Context, chain *chainState) 
 					slog.String("expected", chain.cursor.BlockHash),
 					slog.String("actual", b.Hash))
 
-				ancestor := p.handleReorg(rpcCtx, chain)
-
-				ancestorBlock, err := chain.chainInfo.RPC.GetBlock(rpcCtx, utils.Uint64ToHexQty(ancestor))
-				if err != nil {
-					return err
-				}
+				ancestor, hash := p.handleReorg(ctx, chain)
 
 				chain.cursor.BlockNum = ancestor
-				chain.cursor.BlockHash = ancestorBlock.Hash
+				chain.cursor.BlockHash = hash
 
-				if err := p.sink.Rollback(rpcCtx, chain.chainInfo.ChainId, ancestor, ancestorBlock.Hash); err != nil {
+				if err := p.sink.Rollback(ctx, chain.chainInfo.ChainId, ancestor, hash); err != nil {
 					p.logger.Error("failed to rollback sink", slog.String("chain_id", chain.chainInfo.ChainId), slog.Any("error", err))
 				}
 			}
 			return nil
 		})
-		rpcCancel()
+		cancel()
 
 		return err
 	}
@@ -928,3 +945,14 @@ func (p *Processor) logProgress(chain *chainState) {
 	chain.progress.ResetLogWindow()
 }
 
+func (p *Processor) getBlockWithRetry(ctx context.Context, blockNum uint64, chain *chainState) (types.Block, error) {
+	var block types.Block
+	var err error
+
+	err = rpc.RetryWithBackoff(ctx, *chain.opts.RetryConfig, func() error {
+		block, err = chain.chainInfo.RPC.GetBlock(ctx, utils.Uint64ToHexQty(blockNum))
+		return err
+	})
+
+	return block, err
+}
