@@ -28,25 +28,25 @@ func NewDecoderRouter() *DecoderRouter {
 }
 
 // Register a decoder with a match condition
-func (r *DecoderRouter) Register(match MatchFunc,abiName string, dec Decoder) *DecoderRouter {
+func (r *DecoderRouter) Register(match MatchFunc, abiName string, dec Decoder) *DecoderRouter {
 	r.routes = append(r.routes, DecoderRoute{
-		Match: match,
+		Match:   match,
 		Decoder: dec,
-		Name: abiName,
+		Name:    abiName,
 	})
 	return r
 }
 
 // Decode implements the Decoder interface
 func (r *DecoderRouter) Decode(chainId string, log types.Log) (*types.Event, error) {
-    for _, route := range r.routes {
-        if route.Match(log) {
-            return route.Decoder.Decode(route.Name, chainId, log)
-        }
-    }
+	for _, route := range r.routes {
+		if route.Match != nil && route.Match(log) {
+			return route.Decoder.Decode(route.Name, chainId, log)
+		}
+	}
 
-	 // No decoder matched, skip
-    return nil, nil
+	// No decoder matched, skip
+	return nil, nil
 }
 
 // DecodeBatch implements the Decoder interface

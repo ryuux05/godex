@@ -3,12 +3,11 @@ package processor
 import (
 	"context"
 	"log/slog"
-	"fmt"
 
+	coreerrors "github.com/ryuux05/godex/pkg/core/errors"
 	"github.com/ryuux05/godex/pkg/core/rpc"
 	"github.com/ryuux05/godex/pkg/core/types"
 	"github.com/ryuux05/godex/pkg/core/utils"
-
 )
 
 // detectReorg is a function to detect reorg by comparing current block parent hash
@@ -33,8 +32,10 @@ func (p *Processor) detectReorg(ctx context.Context, chain *chainState, currentB
 		chain.cursor.BlockHash = hash
 		chain.cursor.BlockNum = ancestor
 
-		return fmt.Errorf("reorg at: %d", currentBlockNum)
-	
+		return &coreerrors.ReorgError{
+			BlockNum: currentBlockNum,
+			BlockHash: block.Hash,
+		}
 	}
 	return nil
 }
@@ -108,7 +109,7 @@ func (p *Processor) handleReorg(ctx context.Context, chain *chainState) (uint64,
 		}
 		if windowHeadBlock.ParentHash == ancestorHash {
 			chain.blockHashCache.DropAfter(ancestor)
-			p.logger.Info("found reorg ancestor", slog.String("chain_id", chain.chainInfo.ChainId), slog.Uint64("ancestor_block", ancestor))
+			p.logger.Debug("found reorg ancestor", slog.String("chain_id", chain.chainInfo.ChainId), slog.Uint64("ancestor_block", ancestor))
 			return ancestor, ancestorHash
 		}
 

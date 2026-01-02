@@ -8,63 +8,6 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-// Test data from standard_test.go
-const erc20Transfer_ABI = `[
-	{
-	  "anonymous": false,
-	  "inputs": [
-		{
-		  "indexed": true,
-		  "internalType": "address",
-		  "name": "from",
-		  "type": "address"
-		},
-		{
-		  "indexed": true,
-		  "internalType": "address",
-		  "name": "to",
-		  "type": "address"
-		},
-		{
-		  "indexed": false,
-		  "internalType": "uint256",
-		  "name": "value",
-		  "type": "uint256"
-		}
-	  ],
-	  "name": "Transfer",
-	  "type": "event"
-	}
-  ]`
-
-const erc721Transfer_ABI = `[
-	{
-	  "anonymous": false,
-	  "inputs": [
-		{
-		  "indexed": true,
-		  "internalType": "address",
-		  "name": "from",
-		  "type": "address"
-		},
-		{
-		  "indexed": true,
-		  "internalType": "address",
-		  "name": "to",
-		  "type": "address"
-		},
-		{
-		  "indexed": true,
-		  "internalType": "uint256",
-		  "name": "tokenId",
-		  "type": "uint256"
-		}
-	  ],
-	  "name": "Transfer",
-	  "type": "event"
-	}
-  ]`
-
 func TestRouter_ByTopicCount(t *testing.T) {
 	decoder := NewStandardDecoder()
 	decoder.RegisterABI("erc20", erc20Transfer_ABI)

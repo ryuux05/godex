@@ -31,6 +31,13 @@ func (p *Processor) fetchAll(ctx context.Context, chain *chainState, jobs <-chan
 
 func (p *Processor) fetchWorker(ctx context.Context, chain *chainState, jobs <-chan BlockRange, results chan<- FetchResult) error {
 	for job := range jobs {
+		// Check for context cancellation before starting fetch
+		select {
+        case <-ctx.Done():
+            return ctx.Err()
+        default:
+        }
+
         result, err := p.fetch(ctx, chain, job)
 		if err != nil {
             return err 
@@ -45,6 +52,13 @@ func (p *Processor) fetchWorker(ctx context.Context, chain *chainState, jobs <-c
 }
 
 func (p *Processor) fetch(ctx context.Context, chain *chainState, job BlockRange) (FetchResult, error) {
+	// Check context before starting
+	select {
+	case <-ctx.Done():
+		return FetchResult{Range: job}, ctx.Err()
+	default:
+	}
+	
 	var logs []types.Log
 	var err error
 	// When the chain is live
@@ -66,6 +80,12 @@ func (p *Processor) fetch(ctx context.Context, chain *chainState, job BlockRange
 
 			// Record fetch time
 			logs, err = chain.chainInfo.RPC.GetLogs(ctx, filter)
+			if err != nil {
+				return err
+			}
+			
+			// Add debug log
+			p.logger.Debug("fetched logs", slog.Int("count", len(logs)), slog.Any("error", err))
 
 		case FetchModeReceipts:
 			logs, err = p.fetchLogsFromReceipts(ctx, job.From, job.To, chain)
@@ -79,6 +99,13 @@ func (p *Processor) fetch(ctx context.Context, chain *chainState, job BlockRange
 		return FetchResult{Range: job}, err
 	}
 
+	// Check context before fetching timestamps
+	select {
+	case <-ctx.Done():
+		return FetchResult{Range: job, Logs: logs}, ctx.Err()
+	default:
+	}
+	
 	// Fetch timestamps if enabled
     var timestamps map[uint64]uint64
     if chain.opts.EnableTimestamps && len(logs) > 0 {
@@ -149,6 +176,14 @@ func (p *Processor) fetchTimestamps(ctx context.Context, chain *chainState, logs
 func (p *Processor) fetchLogsFromReceipts(ctx context.Context, from uint64, to uint64, chain *chainState) ([]types.Log, error) {
 	var allLogs []types.Log
 	for blockNum := from; blockNum <= to; blockNum++ {
+
+		// Check context between blocks
+		select {
+		case <-ctx.Done():
+			return allLogs, ctx.Err()
+		default:
+		}
+		
 		s_blockNum := utils.Uint64ToHexQty(blockNum)
 		receipts, err := chain.chainInfo.RPC.GetBlockReceipts(ctx, s_blockNum)
 		if err != nil {
@@ -158,8 +193,11 @@ func (p *Processor) fetchLogsFromReceipts(ctx context.Context, from uint64, to u
 		for _, receipt := range receipts {
 			for _, log := range receipt.Logs {
 
-				if _, ok := chain.addressSet[utils.Normalize(log.Address)]; !ok {
-					continue
+				// Allow all addresses if addressSet is empty (no Addresses specified)
+				if len(chain.addressSet) > 0 {
+					if _, ok := chain.addressSet[utils.Normalize(log.Address)]; !ok {
+						continue
+					}
 				}
 
 				if !p.matchesTopicFilter(log, chain) {

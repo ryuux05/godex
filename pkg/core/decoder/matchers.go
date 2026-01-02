@@ -61,7 +61,7 @@ func And(matchers ...MatchFunc) MatchFunc {
 func Or(matchers ...MatchFunc) MatchFunc {
 	return func(log types.Log) bool {
 		for _, m := range matchers {
-			if !m(log) {
+			if m(log) {
 				return  true
 			}
 		}
