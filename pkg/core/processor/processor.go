@@ -268,6 +268,11 @@ func (p *Processor) runChain(ctx context.Context, chain *chainState) error {
 				p.logger.Info("context canceled, stopping chain processing")
 				return nil
 			}
+			 // Handle reorg errors specially - continue immediately
+    		if errors.Is(err, coreerrors.ErrReorgDetected) {
+        		p.logger.Info("reorg handled, continuing from ancestor block")
+        	continue
+    		}
 			
 			p.logger.Error("batch failed", slog.Any("error", err))
 			time.Sleep(5 * time.Second)
@@ -734,14 +739,18 @@ func (p *Processor) processBatch(ctx context.Context, chain *chainState) error {
 	}
 	
 	// Fetch the job that has been planned and return the results
-	results, err := p.fetchAll(batchCtx, chain, jobs)
+	results, fetchCh, err := p.fetchAll(batchCtx, chain, jobs)
 	if err != nil {
 		return fmt.Errorf("failed to fetch block: %w", err)
 	}
 
-	// arbiter process the results in order
-	// cancel the batch context when reorg happen
-	if err = p.arbiter(batchCtx, chain, results, head); err != nil {
+	// arbiter process the results in order concurrently as fetcher sends result
+	arbiterCh, arbiterErr := p.arbiter(batchCtx, chain, results, head)
+
+	select {
+	// case where there is error in arbiter
+	case err := <- arbiterErr:
+
 		if errors.Is(err, coreerrors.ErrReorgDetected) {
 			var reorgErr *coreerrors.ReorgError
 			if errors.As(err, &reorgErr) {
@@ -750,160 +759,32 @@ func (p *Processor) processBatch(ctx context.Context, chain *chainState) error {
 					slog.String("hash", reorgErr.BlockHash),
 				)
 			}
+		}
+
+		// Cancel the batch when there is error with arbiter
 		batchCancel()
-		}
-	}
-	return err
-}
+		// arbiter failed - still wait for fetchers to complete
+		<- fetchCh
+		// arbiter failed- wait for arbiter channel to close
+		<- arbiterCh
+		chain.progress.ResetLogWindow()
+		return err
 
-// Arbiter will process the fetch result from fetcher, and pass it to processWindow in orders
-func (p *Processor) arbiter(ctx context.Context, chain*chainState, results <-chan FetchResult, head uint64) error {
-	// Window storing "from" block with result
-	window := make(map[uint64]FetchResult)
+	// case where fetch done early, we will wait for arbiter
+	case <-fetchCh:
+		<- arbiterCh
+		return nil
 
-	// Next is pointing the next block after the cursor
-	next := chain.cursor.BlockNum + 1
-	 
-	// Progress logging ticker
-	ticker := time.NewTicker(30 * time.Second)
-	defer ticker.Stop()
+	case <- batchCtx.Done():
+		// Context canceled - wait for both to complete gracefully
+		<- fetchCh
+		<- arbiterCh
+		return batchCtx.Err()
 	
-	for {
-		select {
-		case <-ctx.Done():
-			return nil
-		case <-ticker.C:
-			p.logProgress(chain)
-		case result, ok := <-results:
-			if !ok {
-				// Channel is closed. finish the remaining window
-				for {
-					r, exists := window[next]
-					if !exists {
-						// No more remaining window
-						return nil
-					}
-
-					if err := p.processWindow(ctx, chain, result, head); err != nil {
-						return err
-					}
-					delete(window, next)
-					next = r.Range.To + 1
-				}
-			}
-
-			window[result.Range.From] = result
-			
-			for {
-				r, exists := window[next]
-				// If there is no next window then we break the loop
-				if !exists {
-					break
-				}
-
-				if err := p.processWindow(ctx, chain, r, head); err != nil {
-					return err
-				}
-				delete(window, next)
-				next = r.Range.To + 1
-			}
-		}
+	case <- arbiterCh:
+		<- fetchCh
+		return nil
 	}
-}
-
-// Process the window that was created by arbiter.
-// In here decoding, storing, reorg handling will happen.
-func (p *Processor) processWindow(ctx context.Context, chain *chainState, result FetchResult, head uint64) error {
-	from := result.Range.From
-	to := result.Range.To
-
-	// Reorg check
-	// Get the blockhash and compare it with the stored blockhash
-	if from > 0 {
-		var block types.Block
-		err := rpc.RetryWithBackoff(ctx, *chain.opts.RetryConfig, func() error {
-			var err error
-			block, err = chain.chainInfo.RPC.GetBlock(ctx, utils.Uint64ToHexQty(from))
-			return err
-		})
-
-		if err != nil {
-			return err
-		}
-
-		if err := p.detectReorg(ctx, chain, from, block); err != nil {
-			return err
-		}
-
-	}
-
-	// Decode logs
-	events := p.decodeLogs(ctx, chain, result)
-
-	// Store if there is event
-	// Else update the cursor
-	if len(events) > 0 {
-		if err := p.sink.Store(ctx, events); err != nil {
-			return err
-		} 
-	} else {
-		// Get blockhash
-		block, err := p.getBlockWithRetry(ctx, to, chain)
-		if err != nil {
-			return err
-		}
-		if err := p.sink.UpdateCursor(ctx, chain.chainInfo.ChainId, to, block.Hash); err != nil {
-			return err
-		}
-	}
-
-	return nil
-}
-
-// function to decode log into events along with timestamp
-// return empty events if there is no log
-func (p *Processor) decodeLogs(ctx context.Context, chain *chainState, fetchResult FetchResult) []types.Event {
-	// return immediately if there is no logs
-	if len(fetchResult.Logs) <= 0 {
-		return []types.Event{}
-	}
-
-	// storage to store decoded events
-	events := make([]types.Event, 0, len(fetchResult.Logs))
-
-	for _,l := range fetchResult.Logs {
-		topic0 := ""
-		if len(l.Topics) > 0 {
-			topic0 = l.Topics[0]
-		}
-
-		p.logger.Debug("attempting decode",
-			slog.String("address", l.Address),
-			slog.String("topic0", topic0))
-
-		// Decode
-		event, err := p.router.Decode(chain.chainInfo.ChainId, l)
-		if err != nil {
-			p.logger.Warn("failed to decode log", slog.String("chain_id", chain.chainInfo.ChainId), slog.Any("error", err))
-			continue
-		}
-
-		// Get block timestamps
-		if event != nil {
-			blockNum, err := utils.HexQtyToUint64(l.BlockNumber)
-			if err != nil {
-				p.logger.Warn("failed to parse block number for timestamp", slog.Any("error", err))
-			}
-			// Check if timestamp is available
-			_, ok := fetchResult.Timestamps[blockNum]
-			if chain.opts.EnableTimestamps && ok {
-				event.Timestamp = fetchResult.Timestamps[blockNum]
-			}
-			events = append(events, *event)
-		}
-	}
-
-	return events
 }
 
 // Function to check cursor on resume
@@ -943,29 +824,6 @@ func (p *Processor) checkCursorOnResume(ctx context.Context, chain *chainState) 
 		return err
 	}
 	return nil
-}
-
-func (p *Processor) logProgress(chain *chainState) {
-
-	// Take snapshot and log
-	snapshot := chain.progress.Snapshot()
-	status := "syncing"
-
-	if chain.isLive {
-		status = "live"
-	}
-
-	p.logger.Info(fmt.Sprintf("[%s] Block %s | %.1f%% | %.0f blk/s | ETA %s | %s events",
-		chain.chainInfo.ChainId,
-		utils.FormatNumber(snapshot.current),
-		snapshot.progressPct,
-		snapshot.blockPerSec,
-		snapshot.eta,
-		utils.FormatNumber(snapshot.events),
-	), slog.String("status", status))
-
-	// Reset window for next calculation
-	chain.progress.ResetLogWindow()
 }
 
 func (p *Processor) getBlockWithRetry(ctx context.Context, blockNum uint64, chain *chainState) (types.Block, error) {

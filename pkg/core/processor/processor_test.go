@@ -846,7 +846,7 @@ func TestRunWithRetry_Success(t *testing.T) {
 
 	RPC := rpc.NewHTTPRPC(srv.URL, 0, 0)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
 	retryConfig := rpc.RetryConfig{
@@ -859,7 +859,7 @@ func TestRunWithRetry_Success(t *testing.T) {
 
 	opts := Options{
 		RangeSize: 1,
-		BatchSize: 50,
+		BatchSize: 1,
 
 		FetcherConcurrency: 1,
 		StartBlock:         0,

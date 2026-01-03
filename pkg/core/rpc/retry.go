@@ -27,6 +27,9 @@ type RetryConfig struct {
 	// To spread retry out.
 	// Default: true
 	EnableJitter bool
+	// PerRequestTimeout is timeout duration per each duration
+	// Default: 10 seconds
+	PerRequestTimeout time.Duration
 }
 
 func DefaultRetryConfig() RetryConfig {
@@ -36,6 +39,7 @@ func DefaultRetryConfig() RetryConfig {
 		MaxBackoff:     30 * time.Second,
 		Multiplier:     2.0,
 		EnableJitter:   true,
+		PerRequestTimeout: 10 * time.Second,
 	}
 }
 

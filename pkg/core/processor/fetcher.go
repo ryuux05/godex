@@ -11,22 +11,28 @@ import (
 	"golang.org/x/sync/errgroup"
 )
 
-func (p *Processor) fetchAll(ctx context.Context, chain *chainState, jobs <-chan BlockRange) (<- chan FetchResult, error) {
+func (p *Processor) fetchAll(ctx context.Context, chain *chainState, jobs <-chan BlockRange) (<- chan FetchResult, <-chan struct{}, error) {
 	results := make(chan FetchResult, chain.opts.FetcherConcurrency)
-	g := new(errgroup.Group)
-	for i := 0; i < chain.opts.FetcherConcurrency; i++ {
-		g.Go(func() error {
-			return p.fetchWorker(ctx, chain, jobs, results)
+	done := make(chan struct{}) 
+	g := new(errgroup.Group) 
+	for i := 0; i < chain.opts.FetcherConcurrency; i++ { 
+		g.Go(func() error { 
+			// Each fetcher gets its own context with timeout 
+			fetcherCtx, cancel := context.WithCancel(ctx)
+			defer cancel() 
+			return p.fetchWorker(fetcherCtx, chain, jobs, results)
 		})
 	}
 	go func() {
-        if err := g.Wait(); err != nil {
-            p.logger.Error("fetch worker failed", slog.Any("error", err))
-        }
+		// wait for all fetcher to exit
+		g.Wait()
         close(results)
+		// wait for the done signal
+		// signaling that the fetcher is done
+		close(done)
     }()
     
-    return results, nil
+    return results, done, nil
 }
 
 func (p *Processor) fetchWorker(ctx context.Context, chain *chainState, jobs <-chan BlockRange, results chan<- FetchResult) error {
