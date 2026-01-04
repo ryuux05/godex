@@ -9,6 +9,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/ryuux05/godex/pkg/core/errors"
 	"github.com/ryuux05/godex/pkg/core/metrics"
 	"github.com/ryuux05/godex/pkg/core/types"
 )
@@ -17,15 +18,24 @@ type SinkConfig struct {
 	Pool          *pgxpool.Pool
 	Handler       Handler
 	CopyThreshold int
-	Metrics metrics.Metrics
+	Metrics       metrics.Metrics
 }
 
 type PGSink struct {
 	db            *pgxpool.Pool
 	handler       Handler
 	copyThreshold int
-	metrics metrics.Metrics
+	metrics       metrics.Metrics
 }
+
+const upsertCursorSQL = `
+INSERT INTO chronicle_cursors (chain_id, block_num, block_hash)
+VALUES ($1, $2, $3)
+ON CONFLICT (chain_id)
+DO UPDATE SET
+  block_num = EXCLUDED.block_num,
+  block_hash = EXCLUDED.block_hash;
+`
 
 func NewSink(cfg SinkConfig) (*PGSink, error) {
 	if cfg.Pool == nil {
@@ -36,10 +46,11 @@ func NewSink(cfg SinkConfig) (*PGSink, error) {
 	}
 
 	m := cfg.Metrics
-    if m == nil {
-        m = metrics.Noop{} // or expose a constructor for this
-    }
+	if m == nil {
+		m = metrics.Noop{} // or expose a constructor for this
+	}
 
+	// the performance after 32 rows with copy will show improvement
 	if cfg.CopyThreshold <= 0 {
 		cfg.CopyThreshold = 32 // or 64
 	}
@@ -58,14 +69,14 @@ func (s *PGSink) Store(ctx context.Context, events []types.Event) (err error) {
 
 	start := time.Now()
 	chainId := events[0].ChainId
-    success := false
-    defer func() {
-        d := time.Since(start)
-        s.metrics.ObservedSinkWriteDuration(chainId, d, success)
-        if !success && err != nil {
-            s.metrics.IncSinkErrors(chainId)
-        }
-    }()
+	success := false
+	defer func() {
+		d := time.Since(start)
+		s.metrics.ObservedSinkWriteDuration(chainId, d, success)
+		if !success && err != nil {
+			s.metrics.IncSinkErrors(chainId)
+		}
+	}()
 
 	tx, err := s.db.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
@@ -96,12 +107,7 @@ func (s *PGSink) Store(ctx context.Context, events []types.Event) (err error) {
 		}
 	}
 
-	_, err = tx.Exec(ctx, `
-        INSERT INTO chronicle_cursors (chain_id, block_num, block_hash)
-        VALUES ($1, $2, $3)
-        ON CONFLICT (chain_id)
-        DO UPDATE SET block_num = $2, block_hash = $3
-    `, events[len(events)-1].ChainId, events[len(events)-1].BlockNumber, events[len(events)-1].BlockHash)
+	_, err = tx.Exec(ctx, upsertCursorSQL, events[len(events)-1].ChainId, events[len(events)-1].BlockNumber, events[len(events)-1].BlockHash)
 	if err != nil {
 		return fmt.Errorf("failed to update chronicle_cursors: %w", err)
 	}
@@ -117,27 +123,27 @@ func (s *PGSink) Store(ctx context.Context, events []types.Event) (err error) {
 	s.metrics.IncSinkWrites(chainId, uint64(len(events)))
 
 	// Metrics to set persisted height
-	s.metrics.SetIndexedHeight(chainId, events[len(events) - 1].BlockNumber)
+	s.metrics.SetIndexedHeight(chainId, events[len(events)-1].BlockNumber)
 
 	// Metrics to measure how many persisted have been processed
 	blocks := make(map[uint64]struct{}, len(events))
-    for _, ev := range events {
-        blocks[ev.BlockNumber] = struct{}{}
-    }
-    s.metrics.IncBlocksProcessed(chainId, uint64(len(blocks)))
+	for _, ev := range events {
+		blocks[ev.BlockNumber] = struct{}{}
+	}
+	s.metrics.IncBlocksProcessed(chainId, uint64(len(blocks)))
 
 	return nil
 }
 
-func (s *PGSink) Rollback(ctx context.Context, chainId string, toBlock uint64) (err error) {
+func (s *PGSink) Rollback(ctx context.Context, chainId string, toBlock uint64, blockHash string) (err error) {
 	start := time.Now()
-    success := false
-    defer func() {
-        s.metrics.ObservedSinkWriteDuration(chainId, time.Since(start), success)
-        if !success && err != nil {
-            s.metrics.IncSinkErrors(chainId)
-        }
-    }()
+	success := false
+	defer func() {
+		s.metrics.ObservedSinkWriteDuration(chainId, time.Since(start), success)
+		if !success && err != nil {
+			s.metrics.IncSinkErrors(chainId)
+		}
+	}()
 
 	tx, err := s.db.BeginTx(ctx, pgx.TxOptions{})
 
@@ -164,12 +170,7 @@ func (s *PGSink) Rollback(ctx context.Context, chainId string, toBlock uint64) (
 	}
 
 	// Update cursor to rollback point
-    _, err = tx.Exec(ctx, `
-        INSERT INTO chronicle_cursors (chain_id, block_num, block_hash)
-        VALUES ($1, $2, $3)
-        ON CONFLICT (chain_id)
-        DO UPDATE SET block_num = $2, block_hash = $3
-    `, chainId, newBlock, "")
+	_, err = tx.Exec(ctx, upsertCursorSQL, chainId, newBlock, blockHash)
 	if err != nil {
 		return fmt.Errorf("failed to update cursor: %w", err)
 	}
@@ -179,6 +180,52 @@ func (s *PGSink) Rollback(ctx context.Context, chainId string, toBlock uint64) (
 	}
 
 	success = true
+
+	// Metrics to set new indexedheight after rollback
+	s.metrics.SetIndexedHeight(chainId, newBlock)
+
+	return nil
+}
+
+func (s *PGSink) LoadCursor(ctx context.Context, chainId string) (blockNum uint64, blockHash string, err error) {
+	err = s.db.QueryRow(ctx, `
+		SELECT block_num, block_hash
+		FROM chronicle_cursors
+		WHERE chain_id = $1;
+	`, chainId).Scan(&blockNum, &blockHash)
+
+	if err != nil {
+        if err == pgx.ErrNoRows {
+            return 0, "", errors.ErrCursorNotFound
+        }
+        return 0, "", fmt.Errorf("load cursor: %w", err)
+    }
+
+	return blockNum, blockHash, nil
+}
+
+
+func (s *PGSink) UpdateCursor(ctx context.Context, chainId string, newBlock uint64, blockHash string) error {
+	tx, err := s.db.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return fmt.Errorf("begin transaction: %w", err)
+	}
+
+	defer func() {
+		if err != nil {
+			_ = tx.Rollback(ctx)
+		}
+	}()
+
+	_, err = tx.Exec(ctx, upsertCursorSQL, chainId, newBlock, blockHash)
+
+	if err != nil {
+		return fmt.Errorf("failed to update cursor: %w", err)
+	}
+
+	if err = tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit rollback: %w", err)
+	} 
 
 	// Metrics to set new indexedheight after rollback
 	s.metrics.SetIndexedHeight(chainId, newBlock)

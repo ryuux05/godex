@@ -25,8 +25,6 @@ type HTTPRPC struct{
 	limiter *rate.Limiter
 }
 
-
-
 // Response type for rpc
 type rpcResponse[T any] struct {
 	JSONRPC string `json:"jsonrpc"`
@@ -34,6 +32,12 @@ type rpcResponse[T any] struct {
 	Result T `json:"result"`
 	Error *errors.RPCError `json:"error"`
 }
+
+// allowed result type constrain
+type RPCResult interface {
+    string | types.Block | []types.Log | []types.Receipt
+}
+
 
 // NewHTTPRPC creates an HTTP JSON-RPC client.
 // endpoint is the base RPC URL (e.g., https://...).
@@ -52,120 +56,54 @@ func NewHTTPRPC(endpoint string, rateLimit uint16, burstLimit uint16) *HTTPRPC {
 	}
 }
 
-func(r *HTTPRPC) Head(ctx context.Context) (string, error) {
+func call[T RPCResult](ctx context.Context, r *HTTPRPC, method string, params[]interface{}) (T, error) {
+	var zero T
+
 	if r.limiter != nil {
 		if err := r.limiter.Wait(ctx); err != nil {
-			return "", err
+			return zero, err
 		}
 	}
 
-	body := map[string]interface{} {
+	body := map[string]interface{}{
 		"jsonrpc": "2.0",
-		"id": 1,
-		"method": "eth_blockNumber",
-		"params": []interface{}{},
+		"id":      1,
+		"method":  method,
+		"params":  params,
 	}
 
 	b, err := json.Marshal(body)
 	if err != nil {
-		return "", fmt.Errorf("error marshaling body: %w", err)
+		return zero, fmt.Errorf("error marshaling body: %w", err)
 	}
-
-	req, err := http.NewRequestWithContext(ctx, "POST",r.endpoint, bytes.NewReader(b))
-	if err != nil {
-		return "", fmt.Errorf("error creating http request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-
-	res, err := r.client.Do(req)
-
-	if err != nil {
-		return "", fmt.Errorf("error fetching rpc: %w", err)
-	}
-	defer res.Body.Close()
-
-	if res.StatusCode != http.StatusOK {
-		// HTTP error - transport layer failed
-		return "", &errors.HTTPError{
-			StatusCode: res.StatusCode,
-			Message: res.Status,
-		}
-	}
-
-
-	// Ensure the response body is closed when the function exits
-
-	var resp rpcResponse[string]
-
-	if err := json.NewDecoder(res.Body).Decode(&resp); err != nil {
-		return "", fmt.Errorf("error reading response body: %w", err)
-	}
-	if resp.Error != nil {
-		// RPC error - RPC protocol error
-		return "", &errors.RPCError{
-			Code: resp.Error.Code,
-			Message: resp.Error.Message,
-		}
-	}
-
-
-	return resp.Result, nil
-}
-
-// GetBlock returns the block header for now (second params is set to false)
-func(r *HTTPRPC) GetBlock(ctx context.Context, blockNumber string) (types.Block, error) {
-	if r.limiter != nil {
-		if err := r.limiter.Wait(ctx); err != nil {
-			return types.Block{}, err
-		}
-	}
-
-	body := map[string]interface{} {
-		"jsonrpc": "2.0",
-		"id": 1,
-		"method": "eth_getBlockByNumber",
-		"params": []interface{}{
-			blockNumber,
-			false,
-		},
-	}
-
-	b, err := json.Marshal(body)
-	if err != nil {
-		return types.Block{}, fmt.Errorf("error marshaling body: %w", err)		
-	}
-
 
 	req, err := http.NewRequestWithContext(ctx, "POST", r.endpoint, bytes.NewReader(b))
 	if err != nil {
-		return types.Block{}, fmt.Errorf("error creating http request: %w", err)
+		return zero, fmt.Errorf("error creating http request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
-	
 
 	res, err := r.client.Do(req)
 	if err != nil {
-		return types.Block{}, fmt.Errorf("error fetching rpc: %w", err)		
+		return zero, fmt.Errorf("error fetching rpc: %w", err)
 	}
 	defer res.Body.Close()
 
 	if res.StatusCode != http.StatusOK {
-		return types.Block{}, &errors.HTTPError{
+		return zero, &errors.HTTPError{
 			StatusCode: res.StatusCode,
-			Message: res.Status,
+			Message:    res.Status,
 		}
 	}
 
-
-
-	var resp rpcResponse[types.Block]
-
+	var resp rpcResponse[T]
 	if err := json.NewDecoder(res.Body).Decode(&resp); err != nil {
-		return types.Block{}, fmt.Errorf("error reading response body: %w", err)
+		return zero, fmt.Errorf("error reading response body: %w", err)
 	}
+
 	if resp.Error != nil {
-		return types.Block{}, &errors.RPCError{
-			Code: resp.Error.Code,
+		return zero, &errors.RPCError{
+			Code:    resp.Error.Code,
 			Message: resp.Error.Message,
 		}
 	}
@@ -173,113 +111,98 @@ func(r *HTTPRPC) GetBlock(ctx context.Context, blockNumber string) (types.Block,
 	return resp.Result, nil
 }
 
-func(r *HTTPRPC) GetLogs(ctx context.Context, filter types.Filter) ([]types.Log, error) {
-	if r.limiter != nil {
-		if err := r.limiter.Wait(ctx); err != nil {
-			return []types.Log{}, err
-		}
-	}
-	
-	body := map[string]interface{} {
-		"jsonrpc": "2.0",
-		"id": 1,
-		"method": "eth_getLogs",
-		"params": []interface{}{
-			filter,
-		},
+// callBatch is the generic batch RPC caller.
+func callBatch[T any](ctx context.Context, r *HTTPRPC, requests []map[string]interface{}) ([]rpcResponse[T], error) {
+	if len(requests) == 0 {
+		return nil, nil
 	}
 
-	b, err := json.Marshal(body)
+	if r.limiter != nil {
+		if err := r.limiter.Wait(ctx); err != nil {
+			return nil, err
+		}
+	}
+
+	b, err := json.Marshal(requests)
 	if err != nil {
-		return []types.Log{}, fmt.Errorf("error marshaling body: %w", err)
+		return nil, fmt.Errorf("error marshaling batch: %w", err)
 	}
 
 	req, err := http.NewRequestWithContext(ctx, "POST", r.endpoint, bytes.NewReader(b))
 	if err != nil {
-		return []types.Log{}, fmt.Errorf("error creating http request: %w", err)
+		return nil, fmt.Errorf("error creating http request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
-	
+
 	res, err := r.client.Do(req)
 	if err != nil {
-		return []types.Log{}, fmt.Errorf("error fetching rpc: %w", err)				
+		return nil, fmt.Errorf("error fetching rpc: %w", err)
 	}
 	defer res.Body.Close()
 
 	if res.StatusCode != http.StatusOK {
-		return []types.Log{}, &errors.HTTPError{
+		return nil, &errors.HTTPError{
 			StatusCode: res.StatusCode,
-			Message: res.Status,
+			Message:    res.Status,
 		}
 	}
 
-
-	var resp rpcResponse[[]types.Log]
-
+	var resp []rpcResponse[T]
 	if err := json.NewDecoder(res.Body).Decode(&resp); err != nil {
-		return []types.Log{}, fmt.Errorf("error reading response body: %w", err)
-	}
-	if resp.Error != nil {
-		return []types.Log{}, &errors.RPCError{
-			Code: resp.Error.Code,
-			Message: resp.Error.Message,
-		}
+		return nil, fmt.Errorf("error reading response body: %w", err)
 	}
 
-	return resp.Result, nil
+	return resp, nil
 }
 
-func(r *HTTPRPC) GetBlockReceipts(ctx context.Context, blockNumber string) ([]types.Receipt, error) {
-	if r.limiter != nil {
-		if err := r.limiter.Wait(ctx); err != nil {
-			return []types.Receipt{}, err
+// ============ Public Methods ============
+
+func (r *HTTPRPC) Head(ctx context.Context) (string, error) {
+	return call[string](ctx, r, "eth_blockNumber", []interface{}{})
+}
+
+func (r *HTTPRPC) GetBlock(ctx context.Context, blockNumber string) (types.Block, error) {
+	return call[types.Block](ctx, r, "eth_getBlockByNumber", []interface{}{blockNumber, false})
+}
+
+func (r *HTTPRPC) GetBlocks(ctx context.Context, blockNumbers []string) (map[string]types.Block, error) {
+	if len(blockNumbers) == 0 {
+		return make(map[string]types.Block), nil
+	}
+
+	requests := make([]map[string]interface{}, len(blockNumbers))
+	for i, n := range blockNumbers {
+		requests[i] = map[string]interface{}{
+			"jsonrpc": "2.0",
+			"id":      i,
+			"method":  "eth_getBlockByNumber",
+			"params":  []interface{}{n, false},
 		}
 	}
 
-	body := map[string]interface{} {
-		"jsonrpc": "2.0",
-		"id": 1,
-		"method": "eth_getBlockReceipts",
-		"params": []interface{}{
-			blockNumber,
-		},		
-	}
-
-	b, err := json.Marshal(body)
+	responses, err := callBatch[types.Block](ctx, r, requests)
 	if err != nil {
-		return []types.Receipt{}, fmt.Errorf("error marshaling body: %w", err)
+		return nil, err
 	}
 
-	req, err := http.NewRequestWithContext(ctx, "POST", r.endpoint, bytes.NewReader(b))
-	if err != nil {
-		return []types.Receipt{}, fmt.Errorf("error creating http request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-
-	res, err := r.client.Do(req)
-	if err != nil {
-		return []types.Receipt{}, fmt.Errorf("error fetching rpc: %w", err)	
-	}
-	defer res.Body.Close()
-
-	if res.StatusCode != http.StatusOK {
-		return []types.Receipt{},  &errors.HTTPError{
-			StatusCode: res.StatusCode,
-			Message: res.Status,
+	blocks := make(map[string]types.Block, len(blockNumbers))
+	for _, res := range responses {
+		if res.Error != nil {
+			continue
 		}
-	} 
-
-	var resp rpcResponse[[]types.Receipt]
-
-	if err := json.NewDecoder(res.Body).Decode(&resp); err != nil {
-		return []types.Receipt{}, fmt.Errorf("error reading response body: %w", err)
-	}
-	if resp.Error != nil {
-		return []types.Receipt{}, &errors.RPCError{
-			Code: resp.Error.Code,
-			Message: resp.Error.Message,
+		idx := int(res.ID)
+		if idx >= 0 && idx < len(blockNumbers) {
+			blocks[blockNumbers[idx]] = res.Result
 		}
 	}
 
-	return resp.Result, nil
+	return blocks, nil
+}
+
+func (r *HTTPRPC) GetLogs(ctx context.Context, filter types.Filter) ([]types.Log, error) {
+	return call[[]types.Log](ctx, r, "eth_getLogs", []interface{}{filter})
+}
+
+func (r *HTTPRPC) GetBlockReceipts(ctx context.Context, blockNumber string) ([]types.Receipt, error) {
+	return call[[]types.Receipt](ctx, r, "eth_getBlockReceipts", []interface{}{blockNumber})
 }

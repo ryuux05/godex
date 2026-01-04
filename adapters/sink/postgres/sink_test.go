@@ -38,7 +38,9 @@ func getTestDB(t *testing.T) *pgxpool.Pool {
 
 // cleanupTestDB cleans up test data
 func cleanupTestDB(t *testing.T, pool *pgxpool.Pool) {
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+    defer cancel()
+
 	_, err := pool.Exec(ctx, `
 		TRUNCATE TABLE chronicle_events CASCADE;
 		TRUNCATE TABLE chronicle_cursors CASCADE;
@@ -343,7 +345,7 @@ func TestRollback(t *testing.T) {
 	assert.Equal(t, 3, count)
 
 	// Rollback to block 401 (should delete block 401 and 402)
-	err = sink.Rollback(ctx, "1", 401)
+	err = sink.Rollback(ctx, "1", 401, "")
 	assert.NoError(t, err)
 
 	// Verify only block 400 remains
@@ -363,12 +365,43 @@ func TestRollback(t *testing.T) {
 	assert.Equal(t, uint64(400), blockNum)
 }
 
+func TestLoadCursor(t *testing.T) {
+	pool := getTestDB(t)
+	if pool == nil {
+		return
+	}
+	//defer pool.Close()
+	defer cleanupTestDB(t, pool)
+
+	handler := &mockHandler{}
+	sink, err := NewSink(SinkConfig{
+		Pool: pool,
+		Handler: handler,
+		CopyThreshold: 100,
+	})
+
+	require.NoError(t, err)
+
+	ctx := context.Background()
+
+	events := []types.Event{
+		{Id: "rollback-zero", ChainId: "1", EventType: "Transfer", BlockNumber: 1, BlockHash: "0x1", TransactionHash: "0xtx1", LogIndex: 0, Address: "0xaddr", Timestamp: uint64(time.Now().Unix()), Fields: types.EventFields{}},
+	}
+	err = sink.Store(ctx, events)
+	assert.NoError(t, err)
+
+	blockNum, blockHash, err := sink.LoadCursor(ctx, "1")
+	assert.NoError(t, err)
+	assert.Equal(t, uint64(1), blockNum)
+	assert.Equal(t, "0x1", blockHash)
+}
+
 func TestRollback_ToZero(t *testing.T) {
 	pool := getTestDB(t)
 	if pool == nil {
 		return
 	}
-	defer pool.Close()
+	//∆defer pool.Close()
 	defer cleanupTestDB(t, pool)
 
 	handler := &mockHandler{}
@@ -385,11 +418,13 @@ func TestRollback_ToZero(t *testing.T) {
 	events := []types.Event{
 		{Id: "rollback-zero", ChainId: "1", EventType: "Transfer", BlockNumber: 1, BlockHash: "0x1", TransactionHash: "0xtx1", LogIndex: 0, Address: "0xaddr", Timestamp: uint64(time.Now().Unix()), Fields: types.EventFields{}},
 	}
+	t.Log("before Store")
 	err = sink.Store(ctx, events)
+	t.Log("after Store")
 	require.NoError(t, err)
 
 	// Rollback to block 0
-	err = sink.Rollback(ctx, "1", 0)
+	err = sink.Rollback(ctx, "1", 0, "")
 	assert.NoError(t, err)
 
 	// Verify cursor is 0

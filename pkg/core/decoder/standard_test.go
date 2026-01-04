@@ -127,7 +127,7 @@ const stringEvent_ABI = `[
   ]`
 
 func TestDecodeTransfer_Successful(t *testing.T) {
-	decoder := NewStandsardDecoder()
+	decoder := NewStandardDecoder()
 	err := decoder.RegisterABI("erc20", erc20Transfer_ABI)
 	assert.NoError(t, err)
 
@@ -163,7 +163,7 @@ func TestDecodeTransfer_Successful(t *testing.T) {
 }
 
 func TestDecodeERC721Transfer_Successful(t *testing.T) {
-	decoder := NewStandsardDecoder()
+	decoder := NewStandardDecoder()
 	err := decoder.RegisterABI("erc721", erc721Transfer_ABI)
 	assert.NoError(t, err)
 
@@ -193,7 +193,7 @@ func TestDecodeERC721Transfer_Successful(t *testing.T) {
 }
 
 func TestDecode_ABINotFound(t *testing.T) {
-	decoder := NewStandsardDecoder()
+	decoder := NewStandardDecoder()
 
 	log := types.Log{
 		Topics: []string{"0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"},
@@ -207,7 +207,7 @@ func TestDecode_ABINotFound(t *testing.T) {
 }
 
 func TestDecode_LogWithNoTopics(t *testing.T) {
-	decoder := NewStandsardDecoder()
+	decoder := NewStandardDecoder()
 	decoder.RegisterABI("erc20", erc20Transfer_ABI)
 
 	log := types.Log{
@@ -222,7 +222,7 @@ func TestDecode_LogWithNoTopics(t *testing.T) {
 }
 
 func TestDecode_EventNotInABI(t *testing.T) {
-	decoder := NewStandsardDecoder()
+	decoder := NewStandardDecoder()
 	decoder.RegisterABI("erc20", erc20Transfer_ABI)
 
 	// Log with different topic hash (not Transfer)
@@ -239,7 +239,7 @@ func TestDecode_EventNotInABI(t *testing.T) {
 }
 
 func TestDecode_StructureMismatch(t *testing.T) {
-	decoder := NewStandsardDecoder()
+	decoder := NewStandardDecoder()
 	decoder.RegisterABI("erc20", erc20Transfer_ABI)
 
 	// ERC721 log (4 topics) but using ERC20 ABI (expects 3 topics)
@@ -260,7 +260,7 @@ func TestDecode_StructureMismatch(t *testing.T) {
 }
 
 func TestDecode_BoolEvent(t *testing.T) {
-	decoder := NewStandsardDecoder()
+	decoder := NewStandardDecoder()
 	decoder.RegisterABI("bool", boolEvent_ABI)
 
 	log := types.Log{
@@ -283,7 +283,7 @@ func TestDecode_BoolEvent(t *testing.T) {
 }
 
 func TestDecode_StringEvent(t *testing.T) {
-	decoder := NewStandsardDecoder()
+	decoder := NewStandardDecoder()
 	decoder.RegisterABI("string", stringEvent_ABI)
 
 	// String "Hello World" encoded in ABI format
@@ -309,7 +309,7 @@ func TestDecode_StringEvent(t *testing.T) {
 }
 
 func TestRegisterABI_InvalidJSON(t *testing.T) {
-	decoder := NewStandsardDecoder()
+	decoder := NewStandardDecoder()
 
 	err := decoder.RegisterABI("test", "invalid json")
 
@@ -318,7 +318,7 @@ func TestRegisterABI_InvalidJSON(t *testing.T) {
 }
 
 func TestRegisterABI_EmptyABI(t *testing.T) {
-	decoder := NewStandsardDecoder()
+	decoder := NewStandardDecoder()
 
 	err := decoder.RegisterABI("empty", "[]")
 
@@ -326,7 +326,7 @@ func TestRegisterABI_EmptyABI(t *testing.T) {
 }
 
 func TestRegisterABI_MultipleABIs(t *testing.T) {
-	decoder := NewStandsardDecoder()
+	decoder := NewStandardDecoder()
 
 	err1 := decoder.RegisterABI("erc20", erc20Transfer_ABI)
 	err2 := decoder.RegisterABI("erc721", erc721Transfer_ABI)
@@ -373,7 +373,7 @@ func TestRegisterABI_MultipleABIs(t *testing.T) {
 }
 
 func TestDecode_DataTooShort(t *testing.T) {
-	decoder := NewStandsardDecoder()
+	decoder := NewStandardDecoder()
 	decoder.RegisterABI("erc20", erc20Transfer_ABI)
 
 	log := types.Log{
@@ -394,7 +394,7 @@ func TestDecode_DataTooShort(t *testing.T) {
 }
 
 func TestDecode_MissingIndexedParameter(t *testing.T) {
-	decoder := NewStandsardDecoder()
+	decoder := NewStandardDecoder()
 	decoder.RegisterABI("erc20", erc20Transfer_ABI)
 
 	// Missing second topic (to address)

@@ -2,8 +2,10 @@ package utils
 
 import (
 	"encoding/hex"
+	"fmt"
 	"strconv"
 	"strings"
+	"time"
 
 	"golang.org/x/crypto/sha3"
 )
@@ -42,20 +44,50 @@ func FunctionSignatureToTopic(signature string) string {
 	return "0x" + hex.EncodeToString(hash)
 }
 
-func ConvertToTopics(signatures []string) []string {
-	topics := make([]string, len(signatures))
+func ConvertToTopics(signatures [][]string) [][]string {
+	topics := make([][]string, len(signatures))
 	for i, signature := range signatures {
-		// Check if the signature has been hashed to keccak256 and has the hex prefix
-		if len(signature) == 66 && strings.HasPrefix(signature, "0x") {
-			topics[i] = signature
-			// Check if the signature has been hashed but didnt have the hex prefix
-		} else if len(signature) == 64 && !strings.HasPrefix(signature, "0x") {
-			topics[i] = "0x" + signature
-		} else {
-			topics[i] = FunctionSignatureToTopic(signature)
+		topics[i] = make([]string, len(signature))
+		for j, topic := range signature {
+			// Check if the signature has been hashed to keccak256 and has the hex prefix
+			if len(topic) == 66 && strings.HasPrefix(topic, "0x") {
+				topics[i][j] = topic
+				// Check if the signature has been hashed but didnt have the hex prefix
+			} else if len(topic) == 64 && !strings.HasPrefix(topic, "0x") {
+				topics[i][j] = "0x" + topic
+			} else {
+				topics[i][j] = FunctionSignatureToTopic(topic)
+			}
 		}
 		
 	}
 	
 	return topics
+}
+
+// Normalize converts address to lower case and trim the first two character "0x"
+func Normalize(address string) string {
+	return strings.ToLower(strings.TrimPrefix(address, "0x"))
+}
+
+func FormatNumber(n uint64) string {
+    if n >= 1_000_000 {
+        return fmt.Sprintf("%.1fM", float64(n)/1_000_000)
+    }
+    if n >= 1_000 {
+        return fmt.Sprintf("%.1fK", float64(n)/1_000)
+    }
+    return fmt.Sprintf("%d", n)
+}
+
+func FormatDuration(d time.Duration) string {
+    if d < time.Minute {
+        return fmt.Sprintf("%ds", int(d.Seconds()))
+    }
+    if d < time.Hour {
+        return fmt.Sprintf("%dm", int(d.Minutes()))
+    }
+    hours := int(d.Hours())
+    mins := int(d.Minutes()) % 60
+    return fmt.Sprintf("%dh %dm", hours, mins)
 }

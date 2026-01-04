@@ -7,6 +7,7 @@ import (
 	"github.com/ryuux05/godex/pkg/core/rpc"
 	"github.com/ryuux05/godex/pkg/core/sink"
 	"github.com/ryuux05/godex/pkg/core/types"
+	"github.com/ryuux05/godex/pkg/core/decoder"
 )
 
 // ===== Re-export Types =====
@@ -22,6 +23,13 @@ const (
     FetchModeReceipts FetchMode = processor.FetchModeReceipts
 )
 // Decoder types
+type Decoder = decoder.Decoder
+
+// From metrics  
+type RetryConfig = rpc.RetryConfig
+
+// Constructor functions
+var NewStandardDecoder = decoder.NewStandardDecoder
 
 // Sink types
 type Sink = sink.Sink

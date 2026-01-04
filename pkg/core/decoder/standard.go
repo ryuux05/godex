@@ -18,7 +18,7 @@ type StandardDecoder struct {
 }
 
 
-func NewStandsardDecoder() *StandardDecoder {
+func NewStandardDecoder() *StandardDecoder {
 	return &StandardDecoder{
 		events: make(map[string]map[string]*types.EventDefinition),
 	}
@@ -37,7 +37,7 @@ func (d *StandardDecoder) Decode(name string, chainId string, log types.Log) (*t
 	}
 
 
-	e, exist := abi[log.Topics[0]]
+	e, exist := abi[strings.ToLower(log.Topics[0])]
 	if !exist {
 		return nil, nil
 	}

@@ -20,7 +20,6 @@ CREATE INDEX ON chronicle_events (chain_id, block_num);
 CREATE INDEX ON chronicle_events (chain_id, kind, block_num);
 CREATE INDEX ON chronicle_events (chain_id, address, block_num);
 
-DROP TABLE IF EXISTS chronicle_cursors;
 CREATE TABLE IF NOT EXISTS chronicle_cursors (
   chain_id   TEXT NOT NULL,
   block_num  BIGINT NOT NULL,

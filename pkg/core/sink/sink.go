@@ -13,12 +13,11 @@ type Sink interface {
 	Store(ctx context.Context, events []types.Event) error
 	// Rollback removes all events from a block number onwards
 	// Used during reorg handling to remove orphaned blocks
-	Rollback(ctx context.Context, chainID string, toBlock uint64) error
+	Rollback(ctx context.Context, chainId string, toBlock uint64, blockHash string) error
+	// LoadCursor load the cursor from persistence storage to continue indexing
+	// returns block nunber along with block hash to do reorg check
+	LoadCursor(ctx context.Context, chainId string) (blockNum uint64, blockHash string, err error)
+	// UpdateCursor store the current block number and block hash to persistence storage
+	UpdateCursor(ctx context.Context, chainId string, newBlock uint64, blockHash string) error
 }
 
-type CursorStore interface {
-	// Load is to load the current cursor state in case of restart, or downtime
-    Load(ctx context.Context, chainID string) (blockNum uint64, blockHash string, err error)
-	// Save is to save the newest cursor state.
-    Save(ctx context.Context, chainID string, blockNum uint64, blockHash string) error
-}

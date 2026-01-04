@@ -1,0 +1,45 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:15
+    environment:
+      POSTGRES_USER: godex
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: godex
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./schema.sql:/docker-entrypoint-initdb.d/schema.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U godex"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+  indexer:
+    build:
+      context: ../..  # Build from repo root
+      dockerfile: examples/erc20-indexer/Dockerfile
+    ports:
+      - "9090:9090"
+    environment:
+      RPC_URL: ${RPC_URL:-https://eth-mainnet.g.alchemy.com/v2/demo}
+      DATABASE_URL: postgres://godex:password@postgres:5432/godex?sslmode=disable
+      START_BLOCK: ${START_BLOCK:-1800000}
+    env_file:
+    - .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - default
+
+volumes:
+  postgres_data:
+
+networks:
+  default:
+    driver: bridge
+

@@ -3,7 +3,7 @@ package rpc
 import (
 	"context"
 	"fmt"
-	"log"
+	"log/slog"
 	"math/rand"
 	"time"
 
@@ -27,15 +27,19 @@ type RetryConfig struct {
 	// To spread retry out.
 	// Default: true
 	EnableJitter bool
+	// PerRequestTimeout is timeout duration per each duration
+	// Default: 10 seconds
+	PerRequestTimeout time.Duration
 }
 
 func DefaultRetryConfig() RetryConfig {
 	return RetryConfig{
-		MaxAttempts: 3,
+		MaxAttempts:    3,
 		InitialBackoff: 1 * time.Second,
-		MaxBackoff: 30 * time.Second,
-		Multiplier: 2.0,
-		EnableJitter: true,
+		MaxBackoff:     30 * time.Second,
+		Multiplier:     2.0,
+		EnableJitter:   true,
+		PerRequestTimeout: 10 * time.Second,
 	}
 }
 
@@ -54,7 +58,7 @@ func RetryWithBackoff(ctx context.Context, config RetryConfig, fn func() error) 
 	var lastErr error
 	backoff := config.InitialBackoff
 
-	for attempt := 0; attempt < config.MaxAttempts; attempt ++ {
+	for attempt := 0; attempt < config.MaxAttempts; attempt++ {
 		// Execute function
 		lastErr = fn()
 
@@ -80,17 +84,21 @@ func RetryWithBackoff(ctx context.Context, config RetryConfig, fn func() error) 
 			wait = backoff + jitter
 		}
 
-		log.Printf("Retry attempt %d/%d failed: %v. Retrying in %v...",
-			attempt+1, config.MaxAttempts, lastErr, wait)
+		slog.Warn("retry attempt failed",
+			slog.Int("attempt", attempt+1),
+			slog.Int("max_attempts", config.MaxAttempts),
+			slog.Any("error", lastErr),
+			slog.Duration("retry_in", wait),
+		)
 
 		// Wait for context cancellation and backoff
 		select {
-		case <- time.After(wait):
+		case <-time.After(wait):
 			backoff = time.Duration(float64(backoff) * config.Multiplier)
 			if backoff > config.MaxBackoff {
 				backoff = config.MaxBackoff
 			}
-		case <- ctx.Done():
+		case <-ctx.Done():
 			return fmt.Errorf("retry cancelled: %w", ctx.Err())
 		}
 
@@ -98,4 +106,3 @@ func RetryWithBackoff(ctx context.Context, config RetryConfig, fn func() error) 
 
 	return fmt.Errorf("max retry attempts (%d) exceeded: %w", config.MaxAttempts, lastErr)
 }
-

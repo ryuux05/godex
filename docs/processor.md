@@ -1,126 +1,188 @@
-## Processor Flow (HTTP, EVM)
+## Processor Architecture
 
-1) Load cursor:
-- Initialize from stored state or `Options.StartBlock`. Internally keep as uint64 for math.
+The Processor implements a high-performance concurrent producer-consumer pipeline with comprehensive reorganization handling, designed for scalable EVM-compatible blockchain indexing across multiple chains.
 
-2) Determine safe target:
-- Call `Head(ctx)` → parse hex to uint64.
-- Compute `target = max(0, head − Options.Confirmations)`. Exit early if `cursor >= target`.
+### Core Components
 
-3) Build topics filter:
-- Use configured topics from `Options.Topics` (supports both function signatures and direct hashes).
-- Function signatures are automatically converted to Keccak256 hashes.
+**Producer Layer (Fetchers)**:
+- Concurrent workers fetch logs and timestamps using batch RPC requests
+- Rate-limited and retry-enabled communication with blockchain nodes
+- Individual context timeouts prevent indefinite blocking
+- Bounded buffering provides natural backpressure
 
-4) Plan ranges:
-- Split `[cursor+1 .. target]` into windows of `Options.RangeSize`.
+**Consumer Layer (Arbiter)**:
+- Single-threaded coordinator ensures in-order processing for reorg safety
+- LRU cache maintains block hash history for efficient reorg detection
+- Direct integration with decoder router and sink for atomic event processing
+- Context-aware processing with graceful cancellation support
 
-5) Concurrent fetching (worker pool):
-- Run up to `Options.FetcherConcurrency` workers.
-- Each worker:
-  - Receives block ranges from a jobs channel.
-  - Creates filter with `FromBlock`/`ToBlock` (hex-quantity strings) and configured topics.
-  - Calls `GetLogs(ctx, filter)` to fetch raw logs.
-  - Sends results to arbiter via `doneCh` (does NOT commit or process logs).
+**State Management**:
+- Per-chain cursor tracking with persistent storage via sink
+- Window-based processing with configurable batch sizes
+- Automatic rollback on reorganization detection with ancestor recovery
 
-6) Arbiter-based ordered commit:
-- Single arbiter goroutine handles all log processing and commitment.
-- Maintains `next = cursor+1` and tracks finished windows in maps:
-  - `window[from] = to` - tracks completed ranges
-  - `windowLogs[from] = []Log` - stores logs for each range
-- **Sequential processing**: Only processes contiguous windows starting from `next`.
-- For each ready window:
-  a) **Reorg detection**: Fetch block header and verify parent hash continuity.
-  b) **Log commitment**: Send logs to output channel (`p.logsCh`) in order.
-  c) **Cursor advancement**: Update `cursor = end` and `next = end + 1`.
-  d) **Hash storage**: Store window end block hash for future reorg detection.
+### Processing Flow
 
-7) Reorg handling:
+1) **Initialization**:
+   - Load cursor from sink or use `StartBlock` configuration
+   - Validate chain configuration and decoder/router registration
+   - Initialize per-chain state including block hash cache and progress tracking
 
-### Reorg Strategy (HTTP-only, window-based)
+2) **Head Determination**:
+   - Fetch latest block height via `RPC.Head()` with retry logic
+   - Calculate safe processing target: `head - ConfirmationDepth`
+   - Handle startup reorganization detection if cursor exists
 
-**Goal**: Detect forks without WS "removed" flags, minimize RPC calls, and roll back safely.
+3) **Range Planning**:
+   - Divide work into windows of `RangeSize` blocks
+   - Distribute ranges to fetcher workers via bounded channel
+   - Support for both historical catch-up and live synchronization modes
 
-**What we store (arbiter-only)**:
-- `storedWindowHash`: map of committed window end height → block hash (bounded ring/LRU).
-- Optionally: `recentBlockHash` for last K blocks to refine ancestors (not required initially).
+4) **Concurrent Fetching**:
+   - `FetcherConcurrency` workers process ranges in parallel with individual timeouts
+   - Each worker fetches logs via `RPC.GetLogs()` or `RPC.GetBlockReceipts()` based on `FetchMode`
+   - Optional timestamp fetching via batched `RPC.GetBlocks()` calls for efficiency
+   - Results streamed to arbiter with natural backpressure via bounded channel
+   - Automatic retry with exponential backoff for transient failures
 
-**Per-window attach and commit**:
-- For each window [from..to] that finishes and is next to commit:
-  - **Attach check**: fetch `header(from)` and require `header(from).ParentHash == storedHash[lastCommitted]`.
-  - **Store end**: fetch `header(to)` and set `storedHash[to] = header(to).Hash`.
-- You fetch at most 2 headers per committed window.
+5) **Ordered Processing**:
+   - Arbiter processes fetch results sequentially for reorg safety
+   - Verifies block hash continuity using LRU cache during reorg detection
+   - Routes logs through decoder router for intelligent event transformation
+   - Stores decoded events atomically via sink with transaction rollback support
+   - Updates cursor and advances processing window with progress tracking
 
-**Detecting reorgs**:
-- **Attach fails**: `header(from).ParentHash != storedHash[lastCommitted]` → reorg detected.
-- **Intra-window reorgs** (between from..to):
-  - Caught next loop by either:
-    - Overlap re-fetch of last K blocks via `getLogs` and noticing differences, or
-    - Verifying a few recent stored (height, hash) entries against current headers.
+### Reorganization Handling
 
-**Lookback (find common ancestor)**:
-- Cancel the current batch context to stop all in-flight RPCs.
-- Walk back by window boundaries using stored end-of-window hashes:
-  - Start at `ancestor = lastCommitted` (e.g., 110). Loop (bounded):
-    - `child := ancestor + 1`; fetch `header(child)`.
-    - If `header(child).ParentHash == storedHash[ancestor]` → ancestor found; break.
-    - Else `ancestor -= RangeSize` and repeat (cap by `ReorgLookbackBlocks`).
-- Optional refinement (if you keep per-block ring): step down block-by-block within the last K blocks to reduce replay.
-- **Recovery**:
-  - Roll back sinks to ancestor (if used).
-  - Set `cursor = ancestor`; drop stored hashes > ancestor.
-  - Start a new batch from `ancestor+1`.
+The processor implements comprehensive reorg detection and recovery using block hash verification.
 
-**Why not check every block?**:
-- Checking only `header(from)` and `header(to)` per window keeps header RPC usage low.
-- Intra-window reorgs are caught on the next loop via overlap or stored hash verification.
+**Detection Mechanism**:
+- Maintains LRU cache of processed block hashes (`BlockHashCache`)
+- Verifies parent hash continuity before processing each window
+- Detects divergence when `block.ParentHash != cachedHash[block.Number-1]`
 
-**WS note**:
-- If you later add WS, "removed: true" logs can trigger immediate rollback hints; HTTP header checks remain the source of truth.
+**Recovery Process**:
+1. **Ancestor Search**: Binary search backward through cached hashes to find common ancestor
+2. **Sink Rollback**: Call `sink.Rollback(chainId, ancestor)` to remove orphaned events
+3. **State Reset**: Update cursor to ancestor block and clear future hashes
+4. **Resume Processing**: Restart from ancestor + 1 with fresh batch
 
-8) Architecture benefits:
-- **Workers**: Stateless, focus only on fetching logs concurrently.
-- **Arbiter**: Stateful, ensures ordered processing and reorg safety.
-- **Separation of concerns**: Fetching vs. processing/commitment logic.
-- **Backpressure**: Arbiter controls pace; if output channel fills, everything waits.
+**Configuration**:
+- `ReorgLookbackBlocks`: Maximum blocks to examine during ancestor search (default: 64)
+- `ConfirmationDepth`: Blocks to wait before processing to avoid most reorgs
 
-9) Context & error handling:
-- Honor `ctx` in all operations and loops.
-- Workers send errors to `errCh`; main loop handles cancellation.
-- Graceful shutdown: Wait for all workers and arbiter before exit.
+**Performance Characteristics**:
+- O(1) hash lookups via LRU cache
+- Bounded memory usage with configurable cache size
+- Minimal RPC overhead (only fetches headers during reorg detection)
 
-**Batch lifecycle (contexts)**:
-- `Run(ctx)` derives a `batchCtx` per scheduling iteration.
-- On reorg or error: `batchCancel()` → wait for workers → lookback → start a fresh batch.
-- Don't close the long-lived logs stream; only stop via ctx.
+### Error Handling & Resilience
 
-## Options (current implementation)
-- **RangeSize**: blocks per `eth_getLogs` window.
-- **FetcherConcurrency**: concurrent fetcher workers.
-- **StartBlock**: inclusive starting height (0 means derive from stored cursor).
-- **Confirmations**: safety depth before processing (e.g., 5–15 for "safe" on Ethereum).
-- **LogsBufferSize**: buffer size for the output logs channel.
-- **Topics**: array of function signatures or direct hashes for log filtering.
-- **ReorgLookbackBlocks**: maximum blocks to walk back during reorg detection.
+**Context Propagation**: All operations honor context cancellation for graceful shutdown across the entire processing pipeline.
 
-## Key Data Structures
-- **Jobs channel**: Distributes block ranges to fetcher workers.
-- **Done channel**: Signals completion of all fetchers to main loop.
-- **DoneCh**: Carries fetched logs from workers to arbiter.
-- **Window maps**: Track completion status and store logs per range.
-- **StoredWindowHash**: Cache of block hashes for reorg detection.
+**Error Classification**:
+- **Transient errors**: Automatic retry with exponential backoff (RPC timeouts, network issues)
+- **Permanent errors**: Immediate failure and context cancellation (invalid configuration, authentication failures)
+- **Reorg errors**: Trigger rollback and recovery process with ancestor block detection
+- **Non-recoverable errors**: Chain-specific failures that stop individual chain processing
 
-## Tuning Knobs
+**Concurrency Safety**:
+- Workers isolated from each other and main arbiter thread
+- Shared state protected by appropriate synchronization primitives
+- Clean shutdown waits for all goroutines with proper cancellation propagation
+- Individual fetcher contexts prevent resource leaks during cancellation
 
-**Confirmations**: Process up to `head − confirmations` (or use "safe/finalized") to keep reorgs shallow/rare.
+**Failure Isolation**:
+- Individual chain failures do not affect other concurrent chains
+- Arbiter processing includes timeout protection to prevent indefinite blocking
+- Sink operations use transactions with automatic rollback on failures
 
-**RangeSize**: 
-- Larger windows = fewer header calls, bigger rollback when reorgs happen.
-- Can shrink near tip for faster reorg detection.
+### Configuration Options
 
-**ReorgLookbackBlocks** (Options): Max blocks to walk back when searching for an ancestor (e.g., 64).
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `RangeSize` | `int` | Required | Blocks per fetch batch (balances throughput vs memory usage) |
+| `FetcherConcurrency` | `int` | Required | Number of concurrent RPC fetch workers |
+| `StartBlock` | `uint64` | 0 | Starting block height (0 = resume from stored cursor) |
+| `ConfirmationDepth` | `uint64` | Required | Blocks to wait before processing to avoid reorgs |
+| `EnableTimestamps` | `bool` | `false` | Include block timestamps in events (additional RPC calls) |
+| `Topics` | `[][]string` | Required | Event signature hashes for filtering (supports OR logic) |
+| `Addresses` | `[]string` | Optional | Contract addresses to monitor (empty = all addresses) |
+| `FetchMode` | `FetchMode` | `FetchModeLogs` | `FetchModeLogs` (efficient) or `FetchModeReceipts` (reliable) |
+| `ReorgLookbackBlocks` | `uint64` | 64 | Maximum blocks to examine during reorg ancestor search |
+| `UseLogsForHistoricalSync` | `bool` | `true` | Prefer `eth_getLogs` for historical data fetching |
+| `RetryConfig` | `*RetryConfig` | Default | Exponential backoff configuration for RPC retries |
 
-**storedWindowHash capacity**: `ceil(ReorgLookbackBlocks / RangeSize) + 1`, clamped (e.g., min 8, max 256).
+### Performance Tuning
 
-**OverlapBlocks** (optional): Small K (e.g., 16–64) for overlap `getLogs` on each loop.
+**Throughput Optimization**:
+- Increase `FetcherConcurrency` to match RPC provider rate limits
+- Adjust `RangeSize` based on event density (100-1000 blocks recommended)
+- Use `FetchModeReceipts` for targeted contract indexing with lower event volume
+- Enable batch timestamp fetching for reduced RPC overhead
 
-## Message Flow
+**Memory Management**:
+- Block hash cache bounded by `ReorgLookbackBlocks` configuration
+- Window-based processing naturally limits concurrent memory usage
+- Channel buffering provides backpressure without unbounded queue growth
+- Individual fetcher timeouts prevent resource leaks during cancellation
+
+**Reorg Resilience**:
+- Higher `ConfirmationDepth` reduces reorg frequency but increases processing latency
+- Lower `ReorgLookbackBlocks` limits recovery time but reduces reorg detection range
+- `UseLogsForHistoricalSync` optimizes initial historical data fetching
+- Monitor reorg frequency via metrics to adjust confirmation depth
+
+**RPC Optimization**:
+- Configure rate limits to match provider quotas
+- Use exponential backoff with jitter to prevent thundering herd problems
+- Batch requests automatically utilized for timestamp fetching
+- Individual request timeouts prevent indefinite blocking
+
+### Decoder Router Integration
+
+The processor seamlessly integrates with the DecoderRouter for intelligent multi-contract event processing:
+
+**Router Benefits**:
+- Single decoder instance can handle multiple contract types
+- Automatic routing based on configurable match conditions
+- Eliminates the need for multiple processor instances
+- Efficient event filtering without redundant decoding attempts
+
+**Integration Pattern**:
+```go
+// Create router with multiple contract support
+router := decoder.NewDecoderRouter().
+    Register(decoder.ByTopicCount(3), "ERC20", erc20Decoder).
+    Register(decoder.ByTopicCount(4), "ERC721", erc721Decoder).
+    Register(decoder.ByAddress("0xUniswap"), "DEX", dexDecoder)
+
+// Register with processor
+processor.AddChain(chainInfo, options, router)
+```
+
+**Router Processing Flow**:
+1. Raw logs fetched from blockchain via RPC
+2. Each log evaluated against router match conditions in order
+3. First matching route selected for decoding
+4. Unmatched logs are silently skipped
+5. Decoded events stored atomically via sink
+
+### Multi-Chain Processing
+
+The processor supports concurrent indexing across multiple blockchain networks:
+
+**Chain Isolation**:
+- Each chain maintains independent state and cursor tracking
+- Individual chain failures do not affect other chains
+- Shared resources (decoder, sink) accessed safely via appropriate synchronization
+
+**Configuration Flexibility**:
+- Different options per chain (range size, concurrency, confirmation depth)
+- Chain-specific retry configurations and rate limits
+- Independent progress tracking and metrics collection
+
+**Startup Behavior**:
+- Chains start concurrently after initialization
+- Cursor resumption from persistent storage
+- Graceful handling of chains with different sync states
