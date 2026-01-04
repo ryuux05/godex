@@ -117,7 +117,7 @@ func (h *ERC20Handler) handleApproval(ctx context.Context, tx pgx.Tx, event type
 func main() {
 	// Setup structured logging
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
-		Level: slog.LevelDebug,
+		Level: slog.LevelInfo,
 	}))
 
 	// Get configuration from environment
@@ -184,8 +184,8 @@ func main() {
 
 	// Configure indexing options
 	opts := &core.Options{
-		RangeSize:          1, // blocks per batch
-		FetcherConcurrency: 1,    // concurrent fetchers
+		RangeSize:          50, // blocks per batch
+		FetcherConcurrency: 10,    // concurrent fetchers
 		StartBlock:         startBlock,
 		ConfirmationDepth:  5,   // wait for confirmations
 		EnableTimestamps:   true, // include block timestamps
@@ -202,6 +202,7 @@ func main() {
 			MaxBackoff:     60 * time.Second, // Increase from 30s
 			Multiplier:     2.0,
 			EnableJitter:   true,
+			PerRequestTimeout: 10 * time.Second,
 		},
 	}
 
@@ -216,8 +217,9 @@ func main() {
 	processor := core.NewProcessor(prometheusMetrics, sink)
 	processor.SetLogger(logger)
 
+	router := decoder.NewDecoderRouter().Register(decoder.ByTopicCount(3), "ERC20", dec)
 	// Register chain with decoder
-	err = processor.AddChain(chain, opts, dec)
+	err = processor.AddChain(chain, opts, router)
 	if err != nil {
 		logger.Error("failed to add chain", slog.Any("error", err))
 		os.Exit(1)
