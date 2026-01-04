@@ -184,7 +184,7 @@ func main() {
 
 	// Configure indexing options
 	opts := &core.Options{
-		RangeSize:          50, // blocks per batch
+		RangeSize:          10, // blocks per batch
 		FetcherConcurrency: 10,    // concurrent fetchers
 		StartBlock:         startBlock,
 		ConfirmationDepth:  5,   // wait for confirmations
