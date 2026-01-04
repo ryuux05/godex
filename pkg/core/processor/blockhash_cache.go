@@ -53,6 +53,7 @@ func (c *BlockHashCache) Set(blockNum uint64, hash string) {
 // Get retrieves a block hash. Returns the hash and true if found.
 func (c *BlockHashCache) Get(blockNum uint64) (string, bool) {
 	if elem, exists := c.items[blockNum]; exists {
+		c.order.MoveToBack(elem)
 		return elem.Value.(*cacheEntry).hash, true
 	}
 	return "", false

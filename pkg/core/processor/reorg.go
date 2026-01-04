@@ -41,104 +41,128 @@ func (p *Processor) detectReorg(ctx context.Context, chain *chainState, currentB
 }
 
 // During ancestor lookup we start from the cursor window and get to the window head and compare to the previous window
-func (p *Processor) handleReorg(ctx context.Context, chain *chainState) (uint64, string)  {
-	ancestor := chain.cursor.BlockNum
-
-	// Helper to get fallback with hash
-    getFallback := func() (uint64, string) {
-        fallback := chain.cursor.BlockNum
-        if fallback > chain.hardFallbackBlocks {
-            fallback -= chain.hardFallbackBlocks
-        } else {
-            fallback = 0
-        }
-        chain.blockHashCache.DropAfter(fallback)
-
-        // Try to get hash from cache or RPC
-        hash, ok := chain.blockHashCache.Get(fallback)
-        if !ok {
-            block, err := chain.chainInfo.RPC.GetBlock(ctx, utils.Uint64ToHexQty(fallback))
-            if err == nil {
-                hash = block.Hash
-            }
-        }
-        return fallback, hash
-    }
-
-	for i := uint64(0); i < uint64(chain.blockHashCache.capacity); i++ {
-
-		fallback := chain.cursor.BlockNum
-		if fallback > chain.hardFallbackBlocks {
-			fallback -= chain.hardFallbackBlocks
+func (p *Processor) handleReorg(ctx context.Context, chain *chainState) (uint64, string) {
+	// Conservative fallback: step back hardFallbackBlocks from cursor
+	fallback := func() (uint64, string) {
+		fb := chain.cursor.BlockNum
+		if fb > chain.hardFallbackBlocks {
+			fb -= chain.hardFallbackBlocks
 		} else {
-			fallback = 0
+			fb = 0
 		}
-		
-		var windowHeadBlock types.Block
-		err := rpc.RetryWithBackoff(ctx, *chain.opts.RetryConfig, func() error {
-			var err error
-			windowHeadBlock, err = chain.chainInfo.RPC.GetBlock(ctx, utils.Uint64ToHexQty(ancestor + 1))
-			
+
+		chain.blockHashCache.DropAfter(fb)
+
+		// Try cache first
+		if h, ok := chain.blockHashCache.Get(fb); ok && h != "" {
+			return fb, h
+		}
+
+		// Try RPC (best-effort, but don't hang forever)
+		var h string
+		_ = rpc.RetryWithBackoff(ctx, *chain.opts.RetryConfig, func() error {
+			reqCtx, cancel := context.WithTimeout(ctx, chain.opts.RetryConfig.PerRequestTimeout)
+			defer cancel()
+
+			b, err := chain.chainInfo.RPC.GetBlock(reqCtx, utils.Uint64ToHexQty(fb))
 			if err != nil {
 				return err
 			}
+			h = b.Hash
 			return nil
 		})
 
-		// When we cant connect to rpc we return fallback with empty hash
+		// Never return empty hash if we have a cursor hash
+		if h == "" {
+			h = chain.cursor.BlockHash
+		}
+		return fb, h
+	}
+
+	ancestor := chain.cursor.BlockNum
+
+	// If we don't even have the cursor hash, we can't do a precise startup check.
+	// Do a conservative fallback.
+	if ancestor == 0 && chain.cursor.BlockHash == "" && chain.blockHashCache.Len() == 0 {
+		return fallback()
+	}
+
+	// Bound the number of steps so we never loop forever
+	// With your invariant (fixed RangeSize windows), this is enough.
+	maxSteps := uint64(chain.blockHashCache.capacity)
+	if maxSteps < 1 {
+		maxSteps = 1
+	}
+
+	for steps := uint64(0); steps < maxSteps; steps++ {
+		// Determine expected hash at this ancestor:
+		// - Prefer cache
+		// - If ancestor equals cursor, use cursor hash
+		var expectedHash string
+		if h, ok := chain.blockHashCache.Get(ancestor); ok && h != "" {
+			expectedHash = h
+		} else if ancestor == chain.cursor.BlockNum && chain.cursor.BlockHash != "" {
+			expectedHash = chain.cursor.BlockHash
+		} else {
+			// cache miss at a non-cursor ancestor => can't validate precisely => fallback
+			p.logger.Warn("cache miss during reorg, hard fallback",
+				slog.String("chain_id", chain.chainInfo.ChainId),
+				slog.Uint64("ancestor", ancestor),
+			)
+			return fallback()
+		}
+
+		// Fetch header for ancestor+1 and compare its parent hash
+		nextNum := ancestor + 1
+		nextHex := utils.Uint64ToHexQty(nextNum)
+
+		var nextBlock types.Block
+		err := rpc.RetryWithBackoff(ctx, *chain.opts.RetryConfig, func() error {
+			reqCtx, cancel := context.WithTimeout(ctx, chain.opts.RetryConfig.PerRequestTimeout)
+			defer cancel()
+
+			b, err := chain.chainInfo.RPC.GetBlock(reqCtx, nextHex)
+			if err != nil {
+				return err
+			}
+			nextBlock = b
+			return nil
+		})
 		if err != nil {
-			fallback, hash := getFallback()
-			return fallback, hash
+			// RPC unstable during reorg handling => conservative fallback
+			return fallback()
 		}
-	
 
-		ancestorHash, e := chain.blockHashCache.Get(ancestor)
-		if !e {
-			// hardfallback if ancestor didnt exists
-			fallback := chain.cursor.BlockNum
-			if fallback > chain.hardFallbackBlocks {
-				fallback -= chain.hardFallbackBlocks
-			} else {
-				fallback = 0
-		}
-			p.logger.Warn("cache miss during reorg, hard fallback triggered", slog.String("chain_id", chain.chainInfo.ChainId), slog.Uint64("fallback_block", fallback))
-			chain.blockHashCache.DropAfter(fallback)
-			
-			fallback, hash := getFallback()
-			return fallback, hash
-		}
-		if windowHeadBlock.ParentHash == ancestorHash {
+		if nextBlock.ParentHash == expectedHash {
+			// Found canonical ancestor; drop anything after it
 			chain.blockHashCache.DropAfter(ancestor)
-			p.logger.Debug("found reorg ancestor", slog.String("chain_id", chain.chainInfo.ChainId), slog.Uint64("ancestor_block", ancestor))
-			return ancestor, ancestorHash
+			p.logger.Debug("found reorg ancestor",
+				slog.String("chain_id", chain.chainInfo.ChainId),
+				slog.Uint64("ancestor_block", ancestor),
+			)
+			return ancestor, expectedHash
 		}
 
+		// Step back by one window (your invariant)
 		if ancestor < uint64(chain.opts.RangeSize) {
 			ancestor = 0
-			break
+		} else {
+			ancestor -= uint64(chain.opts.RangeSize)
 		}
-		ancestor -= uint64(chain.opts.RangeSize)
 
 		select {
 		case <-ctx.Done():
-			fallback, hash := getFallback()
-			return fallback, hash
+			return fallback()
 		default:
 		}
 	}
-	fallback := chain.cursor.BlockNum
-	if fallback > chain.hardFallbackBlocks {
-		fallback -= chain.hardFallbackBlocks
-	} else {
-		fallback = 0
-	}
-	p.logger.Warn("hard fallback triggered", slog.String("chain_id", chain.chainInfo.ChainId), slog.Uint64("fallback_block", fallback))
-	if fallback <= 0 {
-		fallback = 0
-	}
-	chain.blockHashCache.DropAfter(fallback)
-	fallback, hash := getFallback()
-	return fallback, hash
+
+	// If we exhausted our step budget, fallback
+	p.logger.Warn("reorg ancestor not found within budget, hard fallback",
+		slog.String("chain_id", chain.chainInfo.ChainId),
+		slog.Uint64("cursor", chain.cursor.BlockNum),
+	)
+	return fallback()
 }
 
 // During processor continuation startup and reorg happened we need to do hardfallback.

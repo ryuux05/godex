@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
-	"time"
 
 	"github.com/ryuux05/godex/pkg/core/decoder"
 	coreerrors "github.com/ryuux05/godex/pkg/core/errors"
@@ -83,7 +82,7 @@ func NewProcessor(m metrics.Metrics, s sink.Sink) *Processor {
 		//logsCh:    make(map[string]chan types.Log),
 		metrics:   m,
 		sink:      s,
-		router:  nil,
+		router:    nil,
 		logger:    slog.Default(),
 		isRunning: false,
 	}
@@ -210,7 +209,7 @@ func (p *Processor) addChain(chain ChainInfo, opts *Options, blockNum uint64, bl
 		opts.RetryConfig = &defaultCfg
 	}
 
-	chainState := &chainState{ 
+	chainState := &chainState{
 		chainInfo:          chain,
 		opts:               opts,
 		cursor:             cursor,
@@ -258,7 +257,7 @@ func (p *Processor) runChain(ctx context.Context, chain *chainState) error {
 	// Main loop
 	for {
 		select {
-		case <- ctx.Done():
+		case <-ctx.Done():
 			return nil
 		default:
 		}
@@ -268,18 +267,19 @@ func (p *Processor) runChain(ctx context.Context, chain *chainState) error {
 				p.logger.Info("context canceled, stopping chain processing")
 				return nil
 			}
-			 // Handle reorg errors specially - continue immediately
-    		if errors.Is(err, coreerrors.ErrReorgDetected) {
-        		p.logger.Info("reorg handled, continuing from ancestor block")
-        	continue
-    		}
-			
-			p.logger.Error("batch failed", slog.Any("error", err))
-			time.Sleep(5 * time.Second)
-			chain.progress.ResetLogWindow()
+			// Handle reorg errors specially - continue immediately
+			if errors.Is(err, coreerrors.ErrReorgDetected) {
+				p.logger.Info("reorg handled, continuing from ancestor block")
+				continue
+			}
+			// Non-recoverable error - stop the chain
+			p.logger.Error("chain stopping due to non-recoverable error", 
+				slog.String("chain_id", chain.chainInfo.ChainId), 
+				slog.Any("error", err))
+			return fmt.Errorf("chain %s stopped due to error: %w", chain.chainInfo.ChainId, err)
 		}
 	}
-	
+
 }
 
 // func (p *Processor) runChain(ctx context.Context, chain *chainState) error {
@@ -737,7 +737,7 @@ func (p *Processor) processBatch(ctx context.Context, chain *chainState) error {
 	if err != nil {
 		return fmt.Errorf("failed to plan jobs: %w", err)
 	}
-	
+
 	// Fetch the job that has been planned and return the results
 	results, fetchCh, err := p.fetchAll(batchCtx, chain, jobs)
 	if err != nil {
@@ -749,7 +749,7 @@ func (p *Processor) processBatch(ctx context.Context, chain *chainState) error {
 
 	select {
 	// case where there is error in arbiter
-	case err := <- arbiterErr:
+	case err := <-arbiterErr:
 
 		if errors.Is(err, coreerrors.ErrReorgDetected) {
 			var reorgErr *coreerrors.ReorgError
@@ -764,25 +764,25 @@ func (p *Processor) processBatch(ctx context.Context, chain *chainState) error {
 		// Cancel the batch when there is error with arbiter
 		batchCancel()
 		// arbiter failed - still wait for fetchers to complete
-		<- fetchCh
+		<-fetchCh
 		// arbiter failed- wait for arbiter channel to close
-		<- arbiterCh
+		<-arbiterCh
 		chain.progress.ResetLogWindow()
 		return err
 
 	// case where fetch done early, we will wait for arbiter
 	case <-fetchCh:
-		<- arbiterCh
+		<-arbiterCh
 		return nil
 
-	case <- batchCtx.Done():
+	case <-batchCtx.Done():
 		// Context canceled - wait for both to complete gracefully
-		<- fetchCh
-		<- arbiterCh
+		<-fetchCh
+		<-arbiterCh
 		return batchCtx.Err()
-	
-	case <- arbiterCh:
-		<- fetchCh
+
+	case <-arbiterCh:
+		<-fetchCh
 		return nil
 	}
 }

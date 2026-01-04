@@ -86,8 +86,6 @@ func (m *MockSink) Rollback(ctx context.Context, chainId string, toBlock uint64,
 		ToBlock uint64
 	}{chainId, toBlock})
 
-	
-
 	return m.RollbackErr
 }
 
@@ -442,15 +440,15 @@ func TestRunWithOneLog_Success(t *testing.T) {
 			http.Error(w, "method no supported", http.StatusBadRequest)
 		}
 	}))
-	defer 	srv.Close()
+	defer srv.Close()
 
-	rpc := rpc.NewHTTPRPC(srv.URL, 0, 0)
+	rpc := rpc.NewHTTPRPC(srv.URL, 1000, 1000)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	opts := Options{
-		RangeSize: 1,
-		BatchSize: 1,
+		RangeSize:          1,
+		BatchSize:          1,
 		FetcherConcurrency: 1,
 		StartBlock:         0,
 		ConfirmationDepth:  0,
@@ -478,8 +476,6 @@ func TestRunWithOneLog_Success(t *testing.T) {
 	mockSink.WaitForEvents(ctx, 1)
 	cancel()
 	<-done
-
-
 
 	// Get events stored to sink
 	totalEvents := mockSink.GetEventCount()
@@ -595,7 +591,7 @@ func TestRunWithMultipleLog_Success(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	rpc := rpc.NewHTTPRPC(srv.URL, 0, 0)
+	rpc := rpc.NewHTTPRPC(srv.URL, 1000, 1000)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
@@ -723,7 +719,7 @@ func TestReorg_Success(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	rpc := rpc.NewHTTPRPC(srv.URL, 0, 0)
+	rpc := rpc.NewHTTPRPC(srv.URL, 1000, 1000)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
@@ -754,6 +750,7 @@ func TestReorg_Success(t *testing.T) {
 
 	// Wait for rollback or events
 	mockSink.WaitForRollback(ctx)
+	mockSink.WaitForEvents(ctx, 10)
 	cancel()
 	<-done
 
@@ -844,17 +841,18 @@ func TestRunWithRetry_Success(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	RPC := rpc.NewHTTPRPC(srv.URL, 0, 0)
+	RPC := rpc.NewHTTPRPC(srv.URL, 1000, 1000)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
 	retryConfig := rpc.RetryConfig{
-		MaxAttempts:    3,
-		InitialBackoff: 10 * time.Millisecond,
-		MaxBackoff:     100 * time.Millisecond,
-		Multiplier:     2.0,
-		EnableJitter:   true,
+		MaxAttempts:       3,
+		InitialBackoff:    10 * time.Millisecond,
+		MaxBackoff:        100 * time.Millisecond,
+		Multiplier:        2.0,
+		EnableJitter:      true,
+		PerRequestTimeout: 2 * time.Second,
 	}
 
 	opts := Options{
@@ -960,8 +958,8 @@ func TestMultiChainRun_Success(t *testing.T) {
 	defer srv.Close()
 
 	// Create two separate RPC clients (simulating different chains)
-	ethRPC := rpc.NewHTTPRPC(srv.URL, 0, 0)
-	polyRPC := rpc.NewHTTPRPC(srv.URL, 0, 0)
+	ethRPC := rpc.NewHTTPRPC(srv.URL, 1000, 1000)
+	polyRPC := rpc.NewHTTPRPC(srv.URL, 1000, 1000)
 
 	mockSink := &MockSink{}
 	processor := NewProcessor(nil, mockSink)
@@ -1141,11 +1139,12 @@ func TestMultiChain_IndependentErrors(t *testing.T) {
 
 	// Fast retry config so Ethereum fails quickly
 	fastRetry := &rpc.RetryConfig{
-		MaxAttempts:    2,
-		InitialBackoff: 10 * time.Millisecond,
-		MaxBackoff:     20 * time.Millisecond,
-		Multiplier:     1.5,
-		EnableJitter:   false,
+		MaxAttempts:       2,
+		InitialBackoff:    10 * time.Millisecond,
+		MaxBackoff:        20 * time.Millisecond,
+		Multiplier:        1.5,
+		EnableJitter:      false,
+		PerRequestTimeout: 1 * time.Second,
 	}
 
 	ethOpts := &Options{
@@ -1172,7 +1171,7 @@ func TestMultiChain_IndependentErrors(t *testing.T) {
 	err := processor.AddChain(ChainInfo{
 		ChainId: "1",
 		Name:    "Ethereum",
-		RPC:     rpc.NewHTTPRPC(ethSrv.URL, 0, 0),
+		RPC:     rpc.NewHTTPRPC(ethSrv.URL, 1000, 1000),
 	}, ethOpts, func() *decoder.DecoderRouter {
 		router := decoder.NewDecoderRouter()
 		router.Register(func(log types.Log) bool { return true }, "test", &MockDecoder{})
@@ -1183,7 +1182,7 @@ func TestMultiChain_IndependentErrors(t *testing.T) {
 	err = processor.AddChain(ChainInfo{
 		ChainId: "137",
 		Name:    "Polygon",
-		RPC:     rpc.NewHTTPRPC(polySrv.URL, 0, 0),
+		RPC:     rpc.NewHTTPRPC(polySrv.URL, 1000, 1000),
 	}, polyOpts, func() *decoder.DecoderRouter {
 		router := decoder.NewDecoderRouter()
 		router.Register(func(log types.Log) bool { return true }, "test", &MockDecoder{})
@@ -1283,9 +1282,10 @@ func TestMultiChain_BothChainsSucceed(t *testing.T) {
 		FetchMode:          FetchModeLogs,
 		Topics:             [][]string{{"0xddf252ad"}},
 		RetryConfig: &rpc.RetryConfig{
-			MaxAttempts:    3,
-			InitialBackoff: 10 * time.Millisecond,
-			MaxBackoff:     50 * time.Millisecond,
+			MaxAttempts:       3,
+			InitialBackoff:    10 * time.Millisecond,
+			MaxBackoff:        50 * time.Millisecond,
+			PerRequestTimeout: 2 * time.Second,
 		},
 	}
 
@@ -1356,7 +1356,7 @@ func TestMultiChain_AddChainWhileRunning(t *testing.T) {
 
 	router := decoder.NewDecoderRouter()
 	router.Register(func(log types.Log) bool { return true }, "test", &MockDecoder{})
-	processor.AddChain(ChainInfo{ChainId: "1", RPC: rpc.NewHTTPRPC(srv.URL, 0, 0)}, opts, router)
+	processor.AddChain(ChainInfo{ChainId: "1", RPC: rpc.NewHTTPRPC(srv.URL, 1000, 1000)}, opts, router)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 	defer cancel()
@@ -1372,7 +1372,7 @@ func TestMultiChain_AddChainWhileRunning(t *testing.T) {
 	// Try to add chain while running
 	router2 := decoder.NewDecoderRouter()
 	router2.Register(func(log types.Log) bool { return true }, "test", &MockDecoder{})
-	err := processor.AddChain(ChainInfo{ChainId: "137", RPC: rpc.NewHTTPRPC(srv.URL, 0, 0)}, opts, router2)
+	err := processor.AddChain(ChainInfo{ChainId: "137", RPC: rpc.NewHTTPRPC(srv.URL, 1000, 1000)}, opts, router2)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "running")
 
@@ -1386,7 +1386,7 @@ func TestUseLogsForHistoricalSync_False(t *testing.T) {
 	srv := NewTestServer(t)
 	defer srv.Close()
 
-	rpchttp := rpc.NewHTTPRPC(srv.URL, 0, 0)
+	rpchttp := rpc.NewHTTPRPC(srv.URL, 1000, 1000)
 
 	opts := &Options{
 		RangeSize:          1,
@@ -1396,9 +1396,10 @@ func TestUseLogsForHistoricalSync_False(t *testing.T) {
 		FetchMode:          FetchModeLogs,
 		Topics:             [][]string{{"0xddf252ad"}},
 		RetryConfig: &rpc.RetryConfig{
-			MaxAttempts:    3,
-			InitialBackoff: 10 * time.Millisecond,
-			MaxBackoff:     50 * time.Millisecond,
+			MaxAttempts:       3,
+			InitialBackoff:    10 * time.Millisecond,
+			MaxBackoff:        50 * time.Millisecond,
+			PerRequestTimeout: 2 * time.Second,
 		},
 	}
 
@@ -1447,7 +1448,7 @@ func TestAddChain_LoadsCursorFromSink(t *testing.T) {
 	router := decoder.NewDecoderRouter()
 	router.Register(func(log types.Log) bool { return true }, "test", &MockDecoder{})
 	err := processor.AddChain(
-		ChainInfo{ChainId: "1", Name: "Eth", RPC: rpc.NewHTTPRPC(srv.URL, 0, 0)},
+		ChainInfo{ChainId: "1", Name: "Eth", RPC: rpc.NewHTTPRPC(srv.URL, 1000, 1000)},
 		opts,
 		router,
 	)
@@ -1479,7 +1480,7 @@ func TestAddChain_CursorNotFound_StartsFromZero(t *testing.T) {
 	router := decoder.NewDecoderRouter()
 	router.Register(func(log types.Log) bool { return true }, "test", &MockDecoder{})
 	err := processor.AddChain(
-		ChainInfo{ChainId: "1", Name: "Eth", RPC: rpc.NewHTTPRPC(srv.URL, 0, 0)},
+		ChainInfo{ChainId: "1", Name: "Eth", RPC: rpc.NewHTTPRPC(srv.URL, 1000, 1000)},
 		opts,
 		router,
 	)
@@ -1509,7 +1510,7 @@ func TestAddChain_CursorLoadError_ReturnsError(t *testing.T) {
 	router := decoder.NewDecoderRouter()
 	router.Register(func(log types.Log) bool { return true }, "test", &MockDecoder{})
 	err := processor.AddChain(
-		ChainInfo{ChainId: "1", Name: "Eth", RPC: rpc.NewHTTPRPC(srv.URL, 0, 0)},
+		ChainInfo{ChainId: "1", Name: "Eth", RPC: rpc.NewHTTPRPC(srv.URL, 1000, 1000)},
 		opts,
 		router,
 	)
@@ -1538,7 +1539,7 @@ func TestRun_CallsDecoderForEachLog(t *testing.T) {
 	router := decoder.NewDecoderRouter()
 	router.Register(func(log types.Log) bool { return true }, "test", mockDecoder)
 	err := processor.AddChain(
-		ChainInfo{ChainId: "1", Name: "Eth", RPC: rpc.NewHTTPRPC(srv.URL, 0, 0)},
+		ChainInfo{ChainId: "1", Name: "Eth", RPC: rpc.NewHTTPRPC(srv.URL, 1000, 1000)},
 		opts,
 		router,
 	)
@@ -1591,7 +1592,7 @@ func TestRun_StoresDecodedEventsToSink(t *testing.T) {
 	router := decoder.NewDecoderRouter()
 	router.Register(func(log types.Log) bool { return true }, "test", mockDecoder)
 	err := processor.AddChain(
-		ChainInfo{ChainId: "1", Name: "Eth", RPC: rpc.NewHTTPRPC(srv.URL, 0, 0)},
+		ChainInfo{ChainId: "1", Name: "Eth", RPC: rpc.NewHTTPRPC(srv.URL, 1000, 1000)},
 		opts,
 		router,
 	)
@@ -1643,7 +1644,7 @@ func TestRun_SkipsNilEventsFromDecoder(t *testing.T) {
 	router := decoder.NewDecoderRouter()
 	router.Register(func(log types.Log) bool { return true }, "test", mockDecoder)
 	err := processor.AddChain(
-		ChainInfo{ChainId: "1", RPC: rpc.NewHTTPRPC(srv.URL, 0, 0)},
+		ChainInfo{ChainId: "1", RPC: rpc.NewHTTPRPC(srv.URL, 1000, 1000)},
 		opts,
 		router,
 	)
@@ -1679,7 +1680,7 @@ func TestRun_HandlesDecodeErrors(t *testing.T) {
 	defer srv.Close()
 
 	processor := NewProcessor(nil, mockSink)
-	processor.SetLogger(logger) 
+	processor.SetLogger(logger)
 
 	opts := &Options{
 		RangeSize:          10,
@@ -1692,7 +1693,7 @@ func TestRun_HandlesDecodeErrors(t *testing.T) {
 	router := decoder.NewDecoderRouter()
 	router.Register(func(log types.Log) bool { return true }, "test", mockDecoder)
 	err := processor.AddChain(
-		ChainInfo{ChainId: "1", RPC: rpc.NewHTTPRPC(srv.URL, 0, 0)},
+		ChainInfo{ChainId: "1", RPC: rpc.NewHTTPRPC(srv.URL, 1000, 1000)},
 		opts,
 		router,
 	)
@@ -1793,7 +1794,7 @@ func TestReorg_CallsSinkRollback(t *testing.T) {
 	router := decoder.NewDecoderRouter()
 	router.Register(func(log types.Log) bool { return true }, "test", &MockDecoder{})
 	err := processor.AddChain(
-		ChainInfo{ChainId: "1", Name: "Eth", RPC: rpc.NewHTTPRPC(srv.URL, 0, 0)},
+		ChainInfo{ChainId: "1", Name: "Eth", RPC: rpc.NewHTTPRPC(srv.URL, 1000, 1000)},
 		opts,
 		router,
 	)
@@ -1833,15 +1834,16 @@ func TestSinkStoreError_HandledGracefully(t *testing.T) {
 		ConfirmationDepth:  0,
 		FetchMode:          FetchModeLogs,
 		RetryConfig: &rpc.RetryConfig{
-			MaxAttempts:    1,
-			InitialBackoff: 10 * time.Millisecond,
+			MaxAttempts:       1,
+			InitialBackoff:    10 * time.Millisecond,
+			PerRequestTimeout: 2 * time.Second,
 		},
 	}
 
 	router := decoder.NewDecoderRouter()
 	router.Register(func(log types.Log) bool { return true }, "test", &MockDecoder{})
 	err := processor.AddChain(
-		ChainInfo{ChainId: "1", RPC: rpc.NewHTTPRPC(srv.URL, 0, 0)},
+		ChainInfo{ChainId: "1", RPC: rpc.NewHTTPRPC(srv.URL, 1000, 1000)},
 		opts,
 		router,
 	)
@@ -1978,7 +1980,7 @@ func TestRun_WithEnableTimestamps(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	rpcClient := rpc.NewHTTPRPC(srv.URL, 0, 0)
+	rpcClient := rpc.NewHTTPRPC(srv.URL, 1000, 1000)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
