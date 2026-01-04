@@ -1,34 +1,33 @@
 package processor
+
 import (
 	"context"
 	"fmt"
 	"log/slog"
-	"time"
 
 	"github.com/ryuux05/godex/pkg/core/rpc"
 	"github.com/ryuux05/godex/pkg/core/types"
 	"github.com/ryuux05/godex/pkg/core/utils"
 )
 
-
 // Arbiter will process the fetch result from fetcher, and pass it to processWindow in orders
-func (p *Processor) arbiter(ctx context.Context, chain*chainState, results <-chan FetchResult, head uint64) (<- chan struct{}, <- chan error) {
+func (p *Processor) arbiter(ctx context.Context, chain *chainState, results <-chan FetchResult, head uint64) (<-chan struct{}, <-chan error) {
 	// arbiter process the results in order concurrently as fetcher sends result
 	// cancel the batch context when reorg happen
 	// channel to block arbiter
 	done := make(chan struct{})
 
 	errCh := make(chan error, 1)
-	
+
 	go func() {
-		defer func(){
+		defer func() {
 			if r := recover(); r != nil {
-                p.logger.Error("arbiter panic", slog.Any("recover", r))
-                select {
-                case errCh <- fmt.Errorf("arbiter panic: %v", r):
-                default:
-                }
-            }
+				p.logger.Error("arbiter panic", slog.Any("recover", r))
+				select {
+				case errCh <- fmt.Errorf("arbiter panic: %v", r):
+				default:
+				}
+			}
 			close(done)
 		}()
 
@@ -37,51 +36,45 @@ func (p *Processor) arbiter(ctx context.Context, chain*chainState, results <-cha
 
 		// Next is pointing the next block after the cursor
 		next := chain.cursor.BlockNum + 1
-		 
-		// Progress logging ticker
-		ticker := time.NewTicker(30 * time.Second)
-		defer ticker.Stop()
-		
+
 		// helper to emit error without blocking
-        emitErr := func(e error) {
-            select {
-            case errCh <- e:
-            default:
-            }
-        }
+		emitErr := func(e error) {
+			select {
+			case errCh <- e:
+			default:
+			}
+		}
 
-        // helper to process all contiguous windows starting at `next`
-        drain := func() bool {
-            for {
-                // Respect cancellation while draining
-                select {
-                case <-ctx.Done():
-                    return false
-                default:
-                }
+		// helper to process all contiguous windows starting at `next`
+		drain := func() bool {
+			for {
+				// Respect cancellation while draining
+				select {
+				case <-ctx.Done():
+					return false
+				default:
+				}
 
-                r, exists := window[next]
-                if !exists {
-                    return true
-                }
+				r, exists := window[next]
+				if !exists {
+					return true
+				}
 
-                if err := p.processWindow(ctx, chain, r, head); err != nil {
-                    emitErr(err)
-                    return false
-                }
+				if err := p.processWindow(ctx, chain, r, head); err != nil {
+					emitErr(err)
+					return false
+				}
 
-                delete(window, next)
-                next = r.Range.To + 1
-            }
-        }
+				delete(window, next)
+				next = r.Range.To + 1
+			}
+		}
 
 		for {
 			select {
 			case <-ctx.Done():
 				p.logger.Info("arbiter exit: context canceled")
-				return 
-			case <-ticker.C:
-				p.logProgress(chain)
+				return
 			case result, ok := <-results:
 				if !ok {
 					_ = drain()
@@ -89,7 +82,7 @@ func (p *Processor) arbiter(ctx context.Context, chain*chainState, results <-cha
 				}
 
 				window[result.Range.From] = result
-				
+
 				if ok := drain(); !ok {
 					return
 				}
@@ -108,7 +101,7 @@ func (p *Processor) processWindow(ctx context.Context, chain *chainState, result
 	// Reorg check
 	// Get the blockhash and compare it with the stored blockhash
 	expectedNext := chain.cursor.BlockNum + 1
-	if from > 0 && from == expectedNext{
+	if from > 0 && from == expectedNext {
 		fromHex := utils.Uint64ToHexQty(from)
 		var block types.Block
 		err := rpc.RetryWithBackoff(ctx, *chain.opts.RetryConfig, func() error {
@@ -141,14 +134,14 @@ func (p *Processor) processWindow(ctx context.Context, chain *chainState, result
 	// get the endblock to store in the window
 	endBlock, err := p.getBlockWithRetry(ctx, to, chain)
 	if err != nil {
-    	return err
+		return err
 	}
 	// Store if there is event
 	// Else update the cursor
 	if len(events) > 0 {
 		if err := p.sink.Store(ctx, events); err != nil {
 			return err
-		} 
+		}
 
 	} else {
 		if err := p.sink.UpdateCursor(ctx, chain.chainInfo.ChainId, to, endBlock.Hash); err != nil {
@@ -157,11 +150,11 @@ func (p *Processor) processWindow(ctx context.Context, chain *chainState, result
 	}
 
 	// update progress
-	chain.progress.Update(to, chain.progress.eventsStored + uint64(len(events)))
+	chain.progress.Update(to, chain.progress.eventsStored+uint64(len(events)))
 
 	// store the end of window for reorg check
 	chain.blockHashCache.Set(to, endBlock.Hash)
-	
+
 	// update the in-memory cursor
 	chain.cursor.BlockNum = to
 	chain.cursor.BlockHash = endBlock.Hash
@@ -180,7 +173,7 @@ func (p *Processor) decodeLogs(ctx context.Context, chain *chainState, fetchResu
 	// storage to store decoded events
 	events := make([]types.Event, 0, len(fetchResult.Logs))
 
-	for _,l := range fetchResult.Logs {
+	for _, l := range fetchResult.Logs {
 		topic0 := ""
 		if len(l.Topics) > 0 {
 			topic0 = l.Topics[0]
@@ -205,37 +198,14 @@ func (p *Processor) decodeLogs(ctx context.Context, chain *chainState, fetchResu
 			}
 			// Check if timestamp is available
 			if chain.opts.EnableTimestamps {
-    			if ts, ok := fetchResult.Timestamps[blockNum]; ok {
-        			event.Timestamp = ts
-    			}
+				if ts, ok := fetchResult.Timestamps[blockNum]; ok {
+					event.Timestamp = ts
+				}
 			}
 			events = append(events, *event)
 		}
 	}
 
 	return events
-}
-
-func (p *Processor) logProgress(chain *chainState) {
-
-	// Take snapshot and log
-	snapshot := chain.progress.Snapshot()
-	status := "syncing"
-
-	if chain.isLive {
-		status = "live"
-	}
-
-	p.logger.Info(fmt.Sprintf("[%s] Block %s | %.1f%% | %.0f blk/s | ETA %s | %s events",
-		chain.chainInfo.ChainId,
-		utils.FormatNumber(snapshot.current),
-		snapshot.progressPct,
-		snapshot.blockPerSec,
-		snapshot.eta,
-		utils.FormatNumber(snapshot.events),
-	), slog.String("status", status))
-
-	// Reset window for next calculation
-	chain.progress.ResetLogWindow()
 }
 

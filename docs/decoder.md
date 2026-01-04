@@ -216,6 +216,242 @@ usdcEvent, _ := decoder.DecodeWith("USDC", log)
 uniswapEvent, _ := decoder.DecodeWith("Uniswap", log)
 ```
 
+### DecoderRouter: Intelligent Event Routing
+
+The DecoderRouter provides intelligent routing of blockchain logs to appropriate decoders based on configurable matching conditions. It enables complex decoding scenarios where different contracts or event types require different ABI interpretations.
+
+#### Router Architecture
+
+The DecoderRouter implements the same Decoder interface but internally manages multiple decoder instances and routes logs based on match conditions.
+
+**Core Components:**
+```go
+type DecoderRouter struct {
+    routes []DecoderRoute
+}
+
+type DecoderRoute struct {
+    Match   MatchFunc    // Condition for routing
+    Name    string       // ABI identifier for decoder
+    Decoder Decoder      // Target decoder instance
+}
+
+type MatchFunc func(log types.Log) bool
+```
+
+#### Built-in Match Functions
+
+The SDK provides several built-in match functions for common routing scenarios:
+
+**ByTopicCount(count int)**
+Matches logs with exactly N topics. Useful for distinguishing event variants:
+```go
+// ERC20 Transfer: 3 topics (Transfer(address,address,uint256))
+router.Register(ByTopicCount(3), "ERC20", decoder)
+
+// ERC721 Transfer: 4 topics (Transfer(address,address,uint256,uint256))
+router.Register(ByTopicCount(4), "ERC721", decoder)
+```
+
+**ByAddress(address string)**
+Matches logs from a specific contract address:
+```go
+router.Register(ByAddress("0xA0b86a33E6441e88C5F2712C3E9b74Ec6F6FDD6F"), "UniswapV2", decoder)
+```
+
+**ByAddresses(addresses []string)**
+Matches logs from any address in the provided list:
+```go
+router.Register(ByAddresses([]string{
+    "0xTokenA",
+    "0xTokenB",
+    "0xTokenC",
+}), "ERC20", decoder)
+```
+
+**ByTopic0(topic0 string)**
+Matches logs by event signature (first topic hash):
+```go
+transferTopic := "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"
+router.Register(ByTopic0(transferTopic), "Transfer", decoder)
+```
+
+**And(matchers ...MatchFunc)**
+Combines multiple matchers with AND logic (all conditions must be true):
+```go
+router.Register(And(
+    ByTopicCount(4),
+    ByAddress("0xNFTContract"),
+    ByTopic0(transferTopic),
+), "ERC721", decoder)
+```
+
+**Or(matchers ...MatchFunc)**
+Combines multiple matchers with OR logic (any condition must be true):
+```go
+router.Register(Or(
+    ByAddress("0xContractA"),
+    ByAddress("0xContractB"),
+), "SpecialABI", decoder)
+```
+
+#### Router Configuration
+
+**Basic Setup:**
+```go
+// Create router instance
+router := decoder.NewDecoderRouter()
+
+// Register routes with match conditions
+router.
+    Register(decoder.ByTopicCount(3), "ERC20", erc20Decoder).
+    Register(decoder.ByTopicCount(4), "ERC721", erc721Decoder).
+    Register(decoder.ByAddress("0xUniswap"), "DEX", dexDecoder)
+```
+
+**Complex Routing Example:**
+```go
+// ERC721: Must have 4 topics AND come from NFT contract AND be Transfer event
+erc721Matcher := decoder.And(
+    decoder.ByTopicCount(4),
+    decoder.ByAddress("0xNFTContract"),
+    decoder.ByTopic0("0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"),
+)
+
+// ERC20: Must have 3 topics AND be Transfer event (from any contract)
+erc20Matcher := decoder.And(
+    decoder.ByTopicCount(3),
+    decoder.ByTopic0("0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"),
+)
+
+// DEX: Must come from Uniswap OR PancakeSwap
+dexMatcher := decoder.Or(
+    decoder.ByAddress("0xUniswapV2"),
+    decoder.ByAddress("0xPancakeSwap"),
+)
+
+router := decoder.NewDecoderRouter().
+    Register(erc721Matcher, "ERC721", erc721Decoder).
+    Register(erc20Matcher, "ERC20", erc20Decoder).
+    Register(dexMatcher, "DEX", dexDecoder)
+```
+
+#### Routing Logic and Precedence
+
+**Route Evaluation:**
+1. Routes are evaluated in registration order (first match wins)
+2. For each log, the router iterates through routes sequentially
+3. First route where `Match(log)` returns `true` is selected
+4. If no routes match, the log is skipped (returns `nil, nil`)
+
+**Route Ordering Matters:**
+```go
+// Order matters - more specific routes first
+router := decoder.NewDecoderRouter().
+    // Specific: Uniswap contract (checked first)
+    Register(ByAddress("0xUniswap"), "Uniswap", decoder).
+    // General: Any 3-topic Transfer (checked second)
+    Register(ByTopicCount(3), "ERC20", decoder)
+```
+
+**Fallback Routes:**
+```go
+// Catch-all route (nil matcher matches everything)
+router.Register(nil, "DefaultABI", decoder)
+
+// Specific routes override fallback
+router.
+    Register(ByAddress("0xSpecial"), "SpecialABI", decoder).
+    Register(nil, "DefaultABI", decoder)  // Fallback for non-special contracts
+```
+
+#### Router Usage with Processor
+
+The DecoderRouter integrates seamlessly with the Processor, replacing single decoders:
+
+```go
+// Create and configure router
+router := decoder.NewDecoderRouter().
+    Register(decoder.ByTopicCount(3), "ERC20", standardDecoder).
+    Register(decoder.ByTopicCount(4), "ERC721", standardDecoder)
+
+// Register with processor (same as single decoder)
+processor.AddChain(chainInfo, options, router)
+```
+
+**Multi-Contract Indexing Example:**
+```go
+// Setup decoders with different ABIs
+erc20Decoder := core.NewStandardDecoder()
+erc20Decoder.RegisterABI("ERC20", erc20ABI)
+
+erc721Decoder := core.NewStandardDecoder()
+erc721Decoder.RegisterABI("ERC721", erc721ABI)
+
+dexDecoder := core.NewStandardDecoder()
+dexDecoder.RegisterABI("DEX", dexABI)
+
+// Create router with intelligent routing
+router := decoder.NewDecoderRouter().
+    // ERC721: 4 topics + specific NFT contracts
+    Register(
+        decoder.And(
+            decoder.ByTopicCount(4),
+            decoder.ByAddresses([]string{"0xAzuki", "0xBAYC", "0xMAYC"}),
+        ),
+        "ERC721",
+        erc721Decoder,
+    ).
+    // DEX: Specific DEX contracts
+    Register(
+        decoder.ByAddresses([]string{"0xUniswapV2", "0xSushiSwap"}),
+        "DEX",
+        dexDecoder,
+    ).
+    // ERC20: Default for 3-topic transfers
+    Register(decoder.ByTopicCount(3), "ERC20", erc20Decoder)
+
+// Register with processor
+processor.AddChain(ethereumChain, options, router)
+```
+
+**Router Benefits:**
+- **Flexibility**: Handle multiple contract types in single indexer
+- **Performance**: Route logs without iterating through all decoders
+- **Maintainability**: Central routing logic instead of scattered conditionals
+- **Extensibility**: Easy addition of new contract types and matchers
+
+#### Custom Match Functions
+
+Users can implement custom match functions for specialized routing logic:
+
+```go
+// Custom matcher: Block range filtering
+func ByBlockRange(from, to uint64) decoder.MatchFunc {
+    return func(log types.Log) bool {
+        blockNum, _ := utils.HexQtyToUint64(log.BlockNumber)
+        return blockNum >= from && blockNum <= to
+    }
+}
+
+// Custom matcher: Data length filtering
+func ByDataLength(minLength int) decoder.MatchFunc {
+    return func(log types.Log) bool {
+        return len(log.Data) >= minLength
+    }
+}
+
+// Usage
+router.Register(
+    decoder.And(
+        ByBlockRange(1000000, 2000000),  // Blocks 1M-2M
+        ByDataLength(32),                // At least 32 bytes of data
+    ),
+    "HistoricalABI",
+    decoder,
+)
+```
+
 ### Custom Decoder Implementation
 
 Users can implement custom decoders for non-standard requirements:
@@ -227,7 +463,7 @@ Users can implement custom decoders for non-standard requirements:
 - Performance optimization for known event structures
 
 **Implementation Requirements:**
-- Satisfy Decoder interface (DecodeWith, DecodeWithBatch, GetTopics)
+- Satisfy Decoder interface (Decode, DecodeBatch)
 - Return Event objects with proper structure
 - Handle errors gracefully
 
@@ -236,12 +472,12 @@ Users can implement custom decoders for non-standard requirements:
 The Processor integrates decoders directly during event processing:
 
 ```go
-// Register decoder when adding chain
+// Register decoder/router when adding chain
 processor.AddChain(chain, options, decoder)
 
 // Processor automatically:
 // 1. Fetches logs via RPC
-// 2. Calls decoder.Decode() for each log
+// 2. Calls decoder.Decode() for each log (router routes internally)
 // 3. Stores resulting events via sink
 ```
 
@@ -249,3 +485,4 @@ processor.AddChain(chain, options, decoder)
 - Decoder registered per-chain during `AddChain()`
 - Processor handles decoding internally for ordered, atomic processing
 - Decoder errors logged but don't stop processing (resilient design)
+- Router enables complex multi-contract scenarios

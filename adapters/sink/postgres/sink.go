@@ -28,6 +28,15 @@ type PGSink struct {
 	metrics       metrics.Metrics
 }
 
+const upsertCursorSQL = `
+INSERT INTO chronicle_cursors (chain_id, block_num, block_hash)
+VALUES ($1, $2, $3)
+ON CONFLICT (chain_id)
+DO UPDATE SET
+  block_num = EXCLUDED.block_num,
+  block_hash = EXCLUDED.block_hash;
+`
+
 func NewSink(cfg SinkConfig) (*PGSink, error) {
 	if cfg.Pool == nil {
 		return nil, fmt.Errorf("pool is required")
@@ -98,12 +107,7 @@ func (s *PGSink) Store(ctx context.Context, events []types.Event) (err error) {
 		}
 	}
 
-	_, err = tx.Exec(ctx, `
-        INSERT INTO chronicle_cursors (chain_id, block_num, block_hash)
-        VALUES ($1, $2, $3)
-        ON CONFLICT (chain_id)
-        DO UPDATE SET block_num = $2, block_hash = $3
-    `, events[len(events)-1].ChainId, events[len(events)-1].BlockNumber, events[len(events)-1].BlockHash)
+	_, err = tx.Exec(ctx, upsertCursorSQL, events[len(events)-1].ChainId, events[len(events)-1].BlockNumber, events[len(events)-1].BlockHash)
 	if err != nil {
 		return fmt.Errorf("failed to update chronicle_cursors: %w", err)
 	}
@@ -166,12 +170,7 @@ func (s *PGSink) Rollback(ctx context.Context, chainId string, toBlock uint64, b
 	}
 
 	// Update cursor to rollback point
-	_, err = tx.Exec(ctx, `
-        INSERT INTO chronicle_cursors (chain_id, block_num, block_hash)
-        VALUES ($1, $2, $3)
-        ON CONFLICT (chain_id)
-        DO UPDATE SET EXCLUDED.block_num = $2, EXCLUDED.block_hash = $3
-    `, chainId, newBlock, blockHash)
+	_, err = tx.Exec(ctx, upsertCursorSQL, chainId, newBlock, blockHash)
 	if err != nil {
 		return fmt.Errorf("failed to update cursor: %w", err)
 	}
@@ -189,38 +188,20 @@ func (s *PGSink) Rollback(ctx context.Context, chainId string, toBlock uint64, b
 }
 
 func (s *PGSink) LoadCursor(ctx context.Context, chainId string) (blockNum uint64, blockHash string, err error) {
-	tx, err := s.db.BeginTx(ctx, pgx.TxOptions{})
-	if err != nil {
-		return 0, "", fmt.Errorf("begin transaction: %w", err)
-	}
-	defer func() {
-		if err != nil {
-			_ = tx.Rollback(ctx)
-		}
-	}()
-
-	row := tx.QueryRow(ctx, `
+	err = s.db.QueryRow(ctx, `
 		SELECT block_num, block_hash
 		FROM chronicle_cursors
 		WHERE chain_id = $1;
-	`, chainId)
+	`, chainId).Scan(&blockNum, &blockHash)
 
 	if err != nil {
-		return 0, "", fmt.Errorf("failed to load cursor from db: %w", err)
-	}
+        if err == pgx.ErrNoRows {
+            return 0, "", errors.ErrCursorNotFound
+        }
+        return 0, "", fmt.Errorf("load cursor: %w", err)
+    }
 
-	var blockNum_row uint64
-	var blockHash_row string
-
-	if err = row.Scan(&blockNum_row, &blockHash_row); err != nil {
-		if err == pgx.ErrNoRows {
-		   // No cursor stored yet → return ErrCursorNotFound
-		   return 0, "", errors.ErrCursorNotFound
-	   }
-	   return 0, "", fmt.Errorf("failed to load cursor: %w", err)
-   }
-
-	return blockNum_row, blockHash_row, nil
+	return blockNum, blockHash, nil
 }
 
 
@@ -236,12 +217,7 @@ func (s *PGSink) UpdateCursor(ctx context.Context, chainId string, newBlock uint
 		}
 	}()
 
-	_, err = tx.Exec(ctx, `
-		INSERT INTO chronicle_cursors (chain_id, block_num, block_hash)
-		VALUES ($1, $2, $3)
-		ON CONFLICT (chain_id)
-		DO UPDATE SET EXCLUDED.block_num = $2, EXCLUDED.block_hash = $3
-	`, chainId, newBlock, blockHash)
+	_, err = tx.Exec(ctx, upsertCursorSQL, chainId, newBlock, blockHash)
 
 	if err != nil {
 		return fmt.Errorf("failed to update cursor: %w", err)
