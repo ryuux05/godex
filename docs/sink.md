@@ -23,13 +23,23 @@ The sink interface enables custom storage backends while maintaining indexer com
 ```go
 type Sink interface {
     // Store persists events atomically with cursor advancement
+    // Events are stored in a transaction, and cursor is updated to the highest block
     Store(ctx context.Context, events []types.Event) error
 
     // Rollback removes events from specified block onwards
-    Rollback(ctx context.Context, chainId string, toBlock uint64) error
+    // Used during blockchain reorganizations to remove orphaned events
+    // Updates cursor to (toBlock - 1) atomically
+    Rollback(ctx context.Context, chainId string, toBlock uint64, blockHash string) error
 
     // LoadCursor retrieves last processed block for resumption
+    // Returns block number and hash for reorg detection
+    // Returns error if cursor not found (first run scenario)
     LoadCursor(ctx context.Context, chainId string) (blockNum uint64, blockHash string, err error)
+
+    // UpdateCursor stores the current block number and hash
+    // Used when no events are stored but cursor needs advancement
+    // Typically called during empty block processing
+    UpdateCursor(ctx context.Context, chainId string, newBlock uint64, blockHash string) error
 }
 ```
 
@@ -52,7 +62,8 @@ The `Sink` interface represents the contract between the indexer core and storag
 **Rollback Operation**:
 - Removes events from a block number onwards
 - Used during blockchain reorganizations
-- Must be atomic
+- Updates cursor to `(toBlock - 1)` with corresponding block hash
+- Must be atomic (both event deletion and cursor update)
 
 ### Cursor Management
 
@@ -67,6 +78,27 @@ Cursors track indexing progress per chain, enabling reliable restartability:
 - Stored alongside events in the same transaction
 - Updated only after successful event persistence
 - Used during startup to determine processing resumption point
+- Can be updated independently via `UpdateCursor` when no events are stored
+
+**UpdateCursor Method:**
+- Advances cursor without storing events
+- Used when processing empty blocks (no events in range)
+- Ensures cursor always reflects processing progress
+- Atomic operation (cursor update only)
+
+**Usage Example:**
+```go
+// Update cursor when no events found in block range
+err := sink.UpdateCursor(ctx, "1", 18000000, "0xabc123...")
+if err != nil {
+    return fmt.Errorf("failed to update cursor: %w", err)
+}
+```
+
+**When to Use:**
+- Processing blocks with no matching events
+- Maintaining cursor consistency during empty ranges
+- Ensuring resumption from correct block after restart
 
 ### Cursor Management
 
@@ -97,6 +129,71 @@ The PostgreSQL adapter provides production-ready event storage with optimized pe
 - Transactional consistency with cursor updates
 - Connection pooling via `pgxpool`
 - Configurable batch thresholds
+
+**Initialization:**
+```go
+import "github.com/ryuux05/godex/adapters/sink/postgres"
+
+// Create connection pool
+pool, err := pgxpool.New(ctx, "postgres://user:pass@host:5432/db")
+if err != nil {
+    return err
+}
+
+// Create handler for custom schema logic
+handler := &MyEventHandler{}
+
+// Create sink with configuration
+sink, err := postgres.NewSink(postgres.SinkConfig{
+    Pool:          pool,
+    Handler:       handler,
+    CopyThreshold: 32,  // Switch to COPY for batches >= 32 events
+    Metrics:       metrics, // Optional metrics (defaults to Noop)
+})
+```
+
+**Configuration Options:**
+- `Pool`: Required PostgreSQL connection pool (`*pgxpool.Pool`)
+- `Handler`: Required handler for custom business logic
+- `CopyThreshold`: Optional threshold for COPY mode (default: 32)
+- `Metrics`: Optional metrics instance (defaults to `metrics.Noop{}`)
+
+### Handler Interface
+
+The Handler interface allows custom business logic to run within the same transaction as event storage:
+
+```go
+type Handler interface {
+    Handle(ctx context.Context, tx pgx.Tx, event types.Event) error
+}
+```
+
+**Handler Execution:**
+- Runs in the same transaction as event storage
+- Executed for each event in the batch sequentially
+- Any error rolls back the entire transaction (events + handler logic)
+- Receives `pgx.Tx` for custom SQL operations
+
+**Example Handler:**
+```go
+type ERC20Handler struct{}
+
+func (h *ERC20Handler) Handle(ctx context.Context, tx pgx.Tx, event types.Event) error {
+    if event.EventType == "Transfer" {
+        from := event.Fields["from"].(string)
+        to := event.Fields["to"].(string)
+        value := event.Fields["value"].(*big.Int)
+        
+        // Custom logic in same transaction
+        _, err := tx.Exec(ctx, `
+            INSERT INTO token_transfers (chain_id, from_addr, to_addr, value)
+            VALUES ($1, $2, $3, $4)
+        `, event.ChainID, from, to, value.String())
+        return err
+    }
+    return nil
+}
+```
 
 ### Internal Schema Design
 
@@ -255,8 +352,13 @@ The `Rollback` method handles blockchain reorganizations:
 **Operation Flow**:
 1. Begin transaction
 2. Delete events from `toBlock` onwards
-3. Update cursor to `toBlock - 1`
+3. Update cursor to `(toBlock - 1)` with corresponding `blockHash`
 4. Commit
+
+**Method Signature:**
+```go
+Rollback(ctx context.Context, chainId string, toBlock uint64, blockHash string) error
+```
 
 **Design Considerations**:
 - **Efficiency**: Single DELETE query for all events

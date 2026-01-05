@@ -21,6 +21,7 @@ func (p *Processor) planJobs(ctx context.Context, chain *chainState) (<-chan Blo
     
     // Already caught up
     if chain.cursor.BlockNum >= target {
+		chain.isLive = true
         ch := make(chan BlockRange)
         close(ch)
         return ch, target, nil

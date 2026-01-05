@@ -184,10 +184,10 @@ func main() {
 
 	// Configure indexing options
 	opts := &core.Options{
-		RangeSize:          10, // blocks per batch
-		FetcherConcurrency: 10,    // concurrent fetchers
+		RangeSize:          1, // blocks per batch
+		FetcherConcurrency: 1,    // concurrent fetchers
 		StartBlock:         startBlock,
-		ConfirmationDepth:  5,   // wait for confirmations
+		ConfirmationDepth:  0,   // wait for confirmations
 		EnableTimestamps:   true, // include block timestamps
 		Topics: [][]string{
 			{"0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef", // Transfer(address,address,uint256)

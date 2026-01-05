@@ -228,7 +228,7 @@ func (p *Processor) addChain(chain ChainInfo, opts *Options, blockNum uint64, bl
 		opts:               opts,
 		cursor:             cursor,
 		blockHashCache:     NewBlockHashCache(int(cap)),
-		hardFallbackBlocks: DefaultHardFallbackBlocks,
+		hardFallbackBlocks: uint64(DefaultHardFallbackBlocks),
 		topics:             topics,
 		addresses:          addresses,
 		addressSet:         addressSet,
@@ -319,6 +319,17 @@ func (p *Processor) processBatch(ctx context.Context, chain *chainState) error {
 
 	// metrics: set processor concurrency
 	p.metrics.SetProcessorConcurrency(chain.chainInfo.ChainId, uint64(chain.opts.FetcherConcurrency))
+
+	// metrics: Observe block lag
+	currentBlock := chain.cursor.BlockNum
+	target := head - chain.opts.ConfirmationDepth
+	if target > currentBlock {
+		lag := target - currentBlock
+		p.metrics.ObservedBlockLag(chain.chainInfo.ChainId, lag)
+	} else {
+		// Caught up - lag is 0
+		p.metrics.ObservedBlockLag(chain.chainInfo.ChainId, 0)
+	}
 
 	// Fetch the job that has been planned and return the results
 	results, fetchCh, err := p.fetchAll(batchCtx, chain, jobs)
