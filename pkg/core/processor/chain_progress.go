@@ -2,11 +2,14 @@ package processor
 
 import (
 	"time"
-
+	"sync"
 	"github.com/ryuux05/godex/pkg/core/utils"
 )
 
 type chainProgress struct {
+	// Mutex to lock
+	mu sync.RWMutex
+
 	// Sync time state
 	syncStartTime  time.Time
 	syncStartBlock uint64
@@ -19,6 +22,7 @@ type chainProgress struct {
 	lastLogTime   time.Time
 	lastLogBlock  uint64
 	lastLogEvents uint64
+	lastProgressAt time.Time
 
 	// Head block
 	headBlock uint64
@@ -32,6 +36,7 @@ type snapshot struct {
 	eventsPerSec float64
 	progressPct float64
 	eta string
+	lastProgressAt time.Time
 }
 
 func NewChainProgress(startBlock uint64) *chainProgress {
@@ -45,9 +50,12 @@ func NewChainProgress(startBlock uint64) *chainProgress {
 	}
 }
 
-func (p *chainProgress) Update(block uint64, events uint64) {
+func (p *chainProgress) Update(block uint64, events uint64, time time.Time) {
+	p.mu.Lock()
     p.currentSyncBlock = block
+	p.lastProgressAt = time
     p.eventsStored = events
+	p.mu.Unlock()
 }
 
 func (p *chainProgress) SetHead(head uint64) {
@@ -55,44 +63,102 @@ func (p *chainProgress) SetHead(head uint64) {
 }
 
 func (p *chainProgress) Snapshot() snapshot {
-    now := time.Now()
-    elapsed := now.Sub(p.lastLogTime).Seconds()
-    
+	now := time.Now()
+
+	// Copy state under lock
+	p.mu.RLock()
+	cur := p.currentSyncBlock
+	head := p.headBlock
+	start := p.syncStartBlock
+
+	events := p.eventsStored
+
+	lastT := p.lastLogTime
+	lastB := p.lastLogBlock
+	lastE := p.lastLogEvents
+	lastP := p.lastProgressAt
+	p.mu.RUnlock()
+
+	elapsed := now.Sub(lastT).Seconds()
+	if elapsed <= 0 {
+		elapsed = 0
+	}
+
+	// Rates
 	var blocksPerSec float64
 	var eventsPerSec float64
-	var progressPct float64
-	var eta string
+	if elapsed > 0 {
+		// protect against weird ordering (shouldn't happen, but don't blow up)
+		var dBlocks uint64
+		if cur >= lastB {
+			dBlocks = cur - lastB
+		}
+		var dEvents uint64
+		if events >= lastE {
+			dEvents = events - lastE
+		}
 
-    if elapsed > 0 {
-        blocksPerSec = float64(p.currentSyncBlock-p.lastLogBlock) / elapsed
-        eventsPerSec = float64(p.eventsStored-p.lastLogEvents) / elapsed
-    }
-    
-    if p.headBlock > p.syncStartBlock {
-        progressPct = float64(p.currentSyncBlock) / float64(p.headBlock) * 100
-    }
-    
-    blocksBehind := p.headBlock - p.currentSyncBlock
-    if blocksPerSec > 0 {
-        etaSecs := float64(blocksBehind) / blocksPerSec
-        eta = utils.FormatDuration(time.Duration(etaSecs) * time.Second)
-    } else {
-        eta = "—"
-    }
-    
+		blocksPerSec = float64(dBlocks) / elapsed
+		eventsPerSec = float64(dEvents) / elapsed
+	}
+
+	// Progress %
+	var progressPct float64
+	if head > start {
+		denom := head - start
+
+		var numer uint64
+		if cur >= start {
+			numer = cur - start
+		} else {
+			numer = 0
+		}
+
+		progressPct = (float64(numer) / float64(denom)) * 100
+		if progressPct < 0 {
+			progressPct = 0
+		} else if progressPct > 100 {
+			progressPct = 100
+		}
+	} else {
+		// head == start (or misconfigured): treat as "done" if we're at/above head
+		if cur >= head && head != 0 {
+			progressPct = 100
+		} else {
+			progressPct = 0
+		}
+	}
+
+	// ETA
+	var blocksBehind uint64
+	if head > cur {
+		blocksBehind = head - cur
+	} else {
+		blocksBehind = 0
+	}
+
+	eta := "—"
+	if blocksBehind > 0 && blocksPerSec > 0 {
+		etaSecs := float64(blocksBehind) / blocksPerSec
+		eta = utils.FormatDuration(time.Duration(etaSecs * float64(time.Second)))
+	}
+
 	return snapshot{
-		current: p.currentSyncBlock,
-		head: p.headBlock,
-		events: p.eventsStored,
-		blockPerSec: blocksPerSec,
+		current:      cur,
+		head:         head,
+		events:       events,
+		blockPerSec:  blocksPerSec,
 		eventsPerSec: eventsPerSec,
-		progressPct: progressPct,
-		eta: eta,
+		progressPct:  progressPct,
+		eta:          eta,
+		lastProgressAt: lastP,
 	}
 }
 
 func (p *chainProgress) ResetLogWindow() {
+	p.mu.Lock()
     p.lastLogTime = time.Now()
     p.lastLogBlock = p.currentSyncBlock
     p.lastLogEvents = p.eventsStored
+	p.mu.Unlock()
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"time"
 
 	"github.com/ryuux05/godex/pkg/core/rpc"
 	"github.com/ryuux05/godex/pkg/core/types"
@@ -150,7 +151,8 @@ func (p *Processor) processWindow(ctx context.Context, chain *chainState, result
 	}
 
 	// update progress
-	chain.progress.Update(to, chain.progress.eventsStored+uint64(len(events)))
+	time := time.Now()
+	chain.progress.Update(to, chain.progress.eventsStored+uint64(len(events)), time)
 
 	// store the end of window for reorg check
 	chain.blockHashCache.Set(to, endBlock.Hash)

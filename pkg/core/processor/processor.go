@@ -19,6 +19,11 @@ import (
 	"golang.org/x/sync/errgroup"
 )
 
+const (
+	// block to fallback during reorg incase there is no ancestor found
+	DefaultHardFallbackBlocks = 1000
+)
+
 type chainState struct {
 	// chainInfo stores chain information where the indexer going to query
 	// Specify RPC (endpoint and rate-limit)
@@ -41,12 +46,14 @@ type chainState struct {
 	// State of the processor of each chain
 	// Is it syncing historical block or live block
 	isLive bool
-
 	// options for processor
 	opts *Options
-
 	//chain Progress
 	progress *chainProgress
+	// store the last err occured
+	lastErr string
+	// store time last error occured
+	lastErrAt time.Time
 }
 
 type Processor struct {
@@ -124,8 +131,14 @@ func (p *Processor) GetChain(chainId string) ChainInfo {
 }
 
 func (p *Processor) Run(ctx context.Context) error {
+	p.mu.Lock()
 	p.isRunning = true
-	defer func() { p.isRunning = false }()
+	p.mu.Unlock()
+	defer func() { 
+		p.mu.Lock()
+		p.isRunning = false
+		p.mu.Unlock()
+	}()
 
 	g := errgroup.Group{}
 	for chainId, chain := range p.chains {
@@ -215,7 +228,7 @@ func (p *Processor) addChain(chain ChainInfo, opts *Options, blockNum uint64, bl
 		opts:               opts,
 		cursor:             cursor,
 		blockHashCache:     NewBlockHashCache(int(cap)),
-		hardFallbackBlocks: 1000,
+		hardFallbackBlocks: DefaultHardFallbackBlocks,
 		topics:             topics,
 		addresses:          addresses,
 		addressSet:         addressSet,
@@ -270,6 +283,10 @@ func (p *Processor) runChain(ctx context.Context, chain *chainState) error {
 		}
 
 		if err := p.processBatch(ctx, chain); err != nil {
+			// store err and the time it occured
+			chain.lastErr = err.Error()
+			chain.lastErrAt = time.Now()
+
 			if err == context.Canceled {
 				p.logger.Info("context canceled, stopping chain processing")
 				return nil
@@ -375,7 +392,9 @@ func (p *Processor) checkCursorOnResume(ctx context.Context, chain *chainState) 
 				chain.cursor.BlockNum = ancestor
 				chain.cursor.BlockHash = hash
 
-				if err := p.sink.Rollback(ctx, chain.chainInfo.ChainId, ancestor, hash); err != nil {
+				rollBackCtx, cancel := context.WithTimeout(context.Background(), 30 * time.Second)
+				defer cancel()
+				if err := p.sink.Rollback(rollBackCtx, chain.chainInfo.ChainId, ancestor, hash); err != nil {
 					p.logger.Error("failed to rollback sink", slog.String("chain_id", chain.chainInfo.ChainId), slog.Any("error", err))
 				}
 			}
