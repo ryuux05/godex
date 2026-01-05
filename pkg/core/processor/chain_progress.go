@@ -69,7 +69,6 @@ func (p *chainProgress) Snapshot() snapshot {
 	p.mu.RLock()
 	cur := p.currentSyncBlock
 	head := p.headBlock
-	start := p.syncStartBlock
 
 	events := p.eventsStored
 
@@ -104,30 +103,9 @@ func (p *chainProgress) Snapshot() snapshot {
 
 	// Progress %
 	var progressPct float64
-	if head > start {
-		denom := head - start
-
-		var numer uint64
-		if cur >= start {
-			numer = cur - start
-		} else {
-			numer = 0
-		}
-
-		progressPct = (float64(numer) / float64(denom)) * 100
-		if progressPct < 0 {
-			progressPct = 0
-		} else if progressPct > 100 {
-			progressPct = 100
-		}
-	} else {
-		// head == start (or misconfigured): treat as "done" if we're at/above head
-		if cur >= head && head != 0 {
-			progressPct = 100
-		} else {
-			progressPct = 0
-		}
-	}
+	 if p.headBlock > p.syncStartBlock {
+        progressPct = float64(p.currentSyncBlock) / float64(p.headBlock) * 100
+    }
 
 	// ETA
 	var blocksBehind uint64
