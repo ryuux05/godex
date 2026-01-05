@@ -140,14 +140,28 @@ func (p *Processor) processWindow(ctx context.Context, chain *chainState, result
 	// Store if there is event
 	// Else update the cursor
 	if len(events) > 0 {
+		// time to calculate sink duration
+		start := time.Now()
 		if err := p.sink.Store(ctx, events); err != nil {
+			// metrics to observe sink write in failure
+			p.metrics.IncSinkErrors(chain.chainInfo.ChainId)
+			p.metrics.ObservedSinkWriteDuration(chain.chainInfo.ChainId, time.Since(start), false)
 			return err
 		}
+		// metrics
+		p.metrics.IncSinkWrites(chain.chainInfo.ChainId, uint64(len(events)))
+		p.metrics.ObservedSinkWriteDuration(chain.chainInfo.ChainId, time.Since(start), true)
 
 	} else {
+		start := time.Now()
 		if err := p.sink.UpdateCursor(ctx, chain.chainInfo.ChainId, to, endBlock.Hash); err != nil {
+			p.metrics.IncSinkErrors(chain.chainInfo.ChainId)
+			// metrics to observe sink write in failure
+			p.metrics.ObservedSinkWriteDuration(chain.chainInfo.ChainId, time.Since(start), false)
 			return err
 		}
+		// metrics
+		p.metrics.ObservedSinkWriteDuration(chain.chainInfo.ChainId, time.Since(start), true)
 	}
 
 	// update progress
@@ -160,6 +174,11 @@ func (p *Processor) processWindow(ctx context.Context, chain *chainState, result
 	// update the in-memory cursor
 	chain.cursor.BlockNum = to
 	chain.cursor.BlockHash = endBlock.Hash
+
+	// metrics
+	blocksProcessed := to - from + 1
+	p.metrics.IncBlocksProcessed(chain.chainInfo.ChainId, blocksProcessed)
+	p.metrics.SetIndexedHeight(chain.chainInfo.ChainId, to)
 
 	return nil
 }

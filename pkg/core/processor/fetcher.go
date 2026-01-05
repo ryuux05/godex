@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"time"
 
 	"github.com/ryuux05/godex/pkg/core/rpc"
 	"github.com/ryuux05/godex/pkg/core/types"
@@ -67,6 +68,8 @@ func (p *Processor) fetch(ctx context.Context, chain *chainState, job BlockRange
 
 	var logs []types.Log
 	var err error
+
+	fetchStart := time.Now()
 	// When the chain is live
 	err = rpc.RetryWithBackoff(ctx, *chain.opts.RetryConfig, func() error {
 		mode := chain.opts.FetchMode
@@ -100,10 +103,15 @@ func (p *Processor) fetch(ctx context.Context, chain *chainState, job BlockRange
 
 		return err
 	})
+	fetchDuration := time.Since(fetchStart)
 
 	if err != nil {
+		// metrics
+		p.metrics.ObservedBlockFetchDuration(chain.chainInfo.ChainId, fetchDuration, false)
 		return FetchResult{Range: job}, err
 	}
+
+	p.metrics.ObservedBlockFetchDuration(chain.chainInfo.ChainId, fetchDuration, true)
 
 	// Check context before fetching timestamps
 	select {

@@ -317,6 +317,9 @@ func (p *Processor) processBatch(ctx context.Context, chain *chainState) error {
 		return fmt.Errorf("failed to plan jobs: %w", err)
 	}
 
+	// metrics: set processor concurrency
+	p.metrics.SetProcessorConcurrency(chain.chainInfo.ChainId, uint64(chain.opts.FetcherConcurrency))
+
 	// Fetch the job that has been planned and return the results
 	results, fetchCh, err := p.fetchAll(batchCtx, chain, jobs)
 	if err != nil {
