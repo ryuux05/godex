@@ -109,14 +109,15 @@ func (p *Processor) fetch(ctx context.Context, chain *chainState, job BlockRange
 	fetchDuration := time.Since(fetchStart)
 
 	if err != nil && errors.IsResponseTooBigError(err) {
-			splitCtx, cancel := context.WithCancel(ctx)
-			defer cancel()
-			
-			logs, err = p.fetchWithSplit(splitCtx, job)
-			if err != nil {
-				p.metrics.ObservedBlockFetchDuration(chain.chainInfo.ChainId, fetchDuration, false)
-				return FetchResult{Range: job}, err
-			}
+		splitCtx, cancel := context.WithCancel(ctx)
+		defer cancel()
+		
+		logs, err = p.fetchWithSplit(splitCtx, job)
+		if err != nil {
+			p.metrics.ObservedBlockFetchDuration(chain.chainInfo.ChainId, fetchDuration, false)
+			return FetchResult{Range: job}, err
+		}
+
 	} else {
 		// metrics
 		p.metrics.ObservedBlockFetchDuration(chain.chainInfo.ChainId, fetchDuration, false)
@@ -148,8 +149,57 @@ func (p *Processor) fetch(ctx context.Context, chain *chainState, job BlockRange
 	}, nil
 }
 
-func (p *Processor) fetchWithSplit(ctx context.Context, job BlockRange) ([]logs, error){
+func (p *Processor) fetchWithSplit(ctx context.Context, chain *chainState, job BlockRange) ([]types.Log, error) {
+	type rng struct{ from, to uint64 }
 
+	out := make([]types.Log, 0, 1024)
+	var walk func(from, to uint64) error
+
+	walk = func(from, to uint64) error {
+		// ctx check
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+
+		filter := types.Filter{
+			FromBlock: utils.Uint64ToHexQty(from),
+			ToBlock:   utils.Uint64ToHexQty(to),
+			Topics:    chain.topics,
+			Address:   chain.addresses,
+		}
+
+		// IMPORTANT: use per-request timeout if you’re doing that elsewhere
+		l, err := chain.chainInfo.RPC.GetLogs(ctx, filter)
+		if err == nil {
+			out = append(out, l...)
+			return nil
+		}
+
+		// only split on "too big"
+		if !errors.IsResponseTooBigError(err) {
+			return err
+		}
+
+		// cannot split further
+		if from == to {
+			return fmt.Errorf("eth_getLogs response too big even for single block %d: %w", from, err)
+		}
+
+		mid := from + (to-from)/2
+
+		// in-order traversal: left then right => preserves block order
+		if err := walk(from, mid); err != nil {
+			return err
+		}
+		return walk(mid+1, to)
+	}
+
+	if err := walk(job.From, job.To); err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 func (p *Processor) fetchTimestamps(ctx context.Context, chain *chainState, logs []types.Log) (map[uint64]uint64, error) {
