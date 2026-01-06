@@ -74,7 +74,7 @@ func (p *chainProgress) Snapshot() snapshot {
 
 	lastT := p.lastLogTime
 	lastB := p.lastLogBlock
-	lastE := p.lastLogEvents
+	lastE := p.lastLogEvents 
 	lastP := p.lastProgressAt
 	p.mu.RUnlock()
 

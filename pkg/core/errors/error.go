@@ -77,6 +77,25 @@ func IsRetryableError(err error) bool {
 	return false
 }
 
+func IsResponseTooBigError(err error) bool {
+	var e *RPCError
+	if !errors.As(err, &e) {
+		return false
+	}
+
+	if e.Code == -32008 {
+		return true
+	}
+
+	msg := strings.ToLower(e.Message)
+
+	if strings.Contains(msg, "response is too big") {
+		return true
+	}
+
+	return false
+}
+
 // ErrCursorNotFound is returned when a cursor does not exist for a chain.
 // This is expected for clean databases starting fresh.
 var ErrCursorNotFound = errors.New("cursor not found")

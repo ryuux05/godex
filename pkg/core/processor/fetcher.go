@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/ryuux05/godex/pkg/core/errors"
 	"github.com/ryuux05/godex/pkg/core/rpc"
 	"github.com/ryuux05/godex/pkg/core/types"
 	"github.com/ryuux05/godex/pkg/core/utils"
@@ -88,7 +89,9 @@ func (p *Processor) fetch(ctx context.Context, chain *chainState, job BlockRange
 			}
 
 			// Record fetch time
-			logs, err = chain.chainInfo.RPC.GetLogs(ctx, filter)
+			rpcCtx, cancel := context.WithTimeout(ctx)
+			defer cancel()
+			logs, err = chain.chainInfo.RPC.GetLogs(rpcCtx, filter)
 			if err != nil {
 				return err
 			}
@@ -105,7 +108,16 @@ func (p *Processor) fetch(ctx context.Context, chain *chainState, job BlockRange
 	})
 	fetchDuration := time.Since(fetchStart)
 
-	if err != nil {
+	if err != nil && errors.IsResponseTooBigError(err) {
+			splitCtx, cancel := context.WithCancel(ctx)
+			defer cancel()
+			
+			logs, err = p.fetchWithSplit(splitCtx, job)
+			if err != nil {
+				p.metrics.ObservedBlockFetchDuration(chain.chainInfo.ChainId, fetchDuration, false)
+				return FetchResult{Range: job}, err
+			}
+	} else {
 		// metrics
 		p.metrics.ObservedBlockFetchDuration(chain.chainInfo.ChainId, fetchDuration, false)
 		return FetchResult{Range: job}, err
@@ -134,6 +146,10 @@ func (p *Processor) fetch(ctx context.Context, chain *chainState, job BlockRange
 		Logs:       logs,
 		Timestamps: timestamps,
 	}, nil
+}
+
+func (p *Processor) fetchWithSplit(ctx context.Context, job BlockRange) ([]logs, error){
+
 }
 
 func (p *Processor) fetchTimestamps(ctx context.Context, chain *chainState, logs []types.Log) (map[uint64]uint64, error) {
@@ -259,3 +275,5 @@ func (p *Processor) matchesTopicFilter(log types.Log, chain *chainState) bool {
 
 	return false
 }
+
+
