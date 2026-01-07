@@ -141,7 +141,7 @@ func (p *Processor) Run(ctx context.Context) error {
 	}()
 
 	g := errgroup.Group{}
-	for chainId, chain := range p.chains {
+	for chainId, chain := range p.chains {	
 		id := chainId
 		c := chain
 		//ch := p.logsCh[id]

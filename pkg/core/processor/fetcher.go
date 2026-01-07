@@ -89,8 +89,9 @@ func (p *Processor) fetch(ctx context.Context, chain *chainState, job BlockRange
 			}
 
 			// Record fetch time
-			rpcCtx, cancel := context.WithTimeout(ctx)
-			defer cancel()
+			rpcCtx, cancel := context.WithTimeout(ctx, chain.opts.RetryConfig.PerRequestTimeout)
+            defer cancel()
+
 			logs, err = chain.chainInfo.RPC.GetLogs(rpcCtx, filter)
 			if err != nil {
 				return err
@@ -111,14 +112,14 @@ func (p *Processor) fetch(ctx context.Context, chain *chainState, job BlockRange
 	if err != nil && errors.IsResponseTooBigError(err) {
 		splitCtx, cancel := context.WithCancel(ctx)
 		defer cancel()
-		
-		logs, err = p.fetchWithSplit(splitCtx, job)
+
+		logs, err = p.fetchWithSplit(splitCtx, chain, job)
 		if err != nil {
 			p.metrics.ObservedBlockFetchDuration(chain.chainInfo.ChainId, fetchDuration, false)
 			return FetchResult{Range: job}, err
 		}
 
-	} else {
+	} else if err != nil {
 		// metrics
 		p.metrics.ObservedBlockFetchDuration(chain.chainInfo.ChainId, fetchDuration, false)
 		return FetchResult{Range: job}, err
@@ -226,7 +227,9 @@ func (p *Processor) fetchTimestamps(ctx context.Context, chain *chainState, logs
 	var blocks map[string]types.Block
 	err := rpc.RetryWithBackoff(ctx, *chain.opts.RetryConfig, func() error {
 		var err error
-		blocks, err = chain.chainInfo.RPC.GetBlocks(ctx, blockNumbers)
+		rpcCtx, cancel := context.WithTimeout(ctx, chain.opts.RetryConfig.PerRequestTimeout)
+        defer cancel()
+		blocks, err = chain.chainInfo.RPC.GetBlocks(rpcCtx, blockNumbers)
 		return err
 	})
 
@@ -263,7 +266,9 @@ func (p *Processor) fetchLogsFromReceipts(ctx context.Context, from uint64, to u
 		}
 
 		s_blockNum := utils.Uint64ToHexQty(blockNum)
-		receipts, err := chain.chainInfo.RPC.GetBlockReceipts(ctx, s_blockNum)
+		rpcCtx, cancel := context.WithTimeout(ctx, chain.opts.RetryConfig.PerRequestTimeout)
+        defer cancel()
+		receipts, err := chain.chainInfo.RPC.GetBlockReceipts(rpcCtx, s_blockNum)
 		if err != nil {
 			return nil, fmt.Errorf("failed to get receipts for block %d: %w", blockNum, err)
 		}
@@ -325,5 +330,3 @@ func (p *Processor) matchesTopicFilter(log types.Log, chain *chainState) bool {
 
 	return false
 }
-
-

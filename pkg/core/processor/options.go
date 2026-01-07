@@ -10,7 +10,6 @@ type FetchMode string
 const (
 	FetchModeLogs     FetchMode = "logs"     // Use eth_getlogs for efficiency
 	FetchModeReceipts FetchMode = "receipts" // Use eth_getBlockReceipts for reliability
-	FetchModeHybrid   FetchMode = "hybrid"   // Use eth_getlogs for historical sync and eth_getBlockReceipts for live sync
 )
 
 type Options struct {
