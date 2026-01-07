@@ -31,8 +31,15 @@ func (p *Processor) planJobs(ctx context.Context, chain *chainState) (<-chan Blo
     
     go func() {
         defer close(jobs)
-        rs := uint64(chain.opts.RangeSize)
         
+		// When chain is live make range size to one for optimal reorg handling`
+		var rs uint64
+		if !chain.isLive {
+			rs = uint64(chain.opts.RangeSize)
+		} else {
+			rs = uint64(1)
+		}
+		
         for from := chain.cursor.BlockNum + 1; from <= target; from += rs {
             to := from + rs - 1
             if to > target {

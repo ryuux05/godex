@@ -240,7 +240,7 @@ func TestFetchWithSplit_SingleBlockTooBig(t *testing.T) {
 	logs, err := processor.fetchWithSplit(ctx, chain, job)
 	assert.Error(t, err)
 	assert.Nil(t, logs)
-	assert.Contains(t, err.Error(), "response too big even for single block")
+	assert.Contains(t, err.Error(), "cannot split single-block range")
 	assert.Contains(t, err.Error(), "5")
 }
 
@@ -332,11 +332,12 @@ func TestFetchWithSplit_NonResponseTooBigError(t *testing.T) {
 }
 
 func TestFetchWithSplit_NoSplitsNeeded(t *testing.T) {
-	// No ranges are too big, should succeed directly
+	// No ranges are too big, but fetchWithSplit will split 0-7 into 0-3 and 4-7
 	tooBigRanges := map[string]bool{}
 
 	logsByRange := map[string][]types.Log{
-		utils.Uint64ToHexQty(0) + "-" + utils.Uint64ToHexQty(7): {
+		// fetchWithSplit splits 0-7 into 0-3 and 4-7
+		utils.Uint64ToHexQty(0) + "-" + utils.Uint64ToHexQty(3): {
 			{
 				Address:          "0xabc",
 				Topics:           []string{"0xddf252ad"},
@@ -347,6 +348,9 @@ func TestFetchWithSplit_NoSplitsNeeded(t *testing.T) {
 				LogIndex:         "0x0",
 				Removed:          false,
 			},
+		},
+		utils.Uint64ToHexQty(4) + "-" + utils.Uint64ToHexQty(7): {
+			// Empty - no logs in second half
 		},
 	}
 
@@ -361,8 +365,9 @@ func TestFetchWithSplit_NoSplitsNeeded(t *testing.T) {
 			ChainId: "1",
 			RPC:     rpcClient,
 		},
-		topics:    [][]string{{"0xddf252ad"}},
-		addresses: []string{},
+		topics:     [][]string{{"0xddf252ad"}},
+		addresses:  []string{},
+		addressSet: make(map[string]struct{}),
 		opts: &Options{
 			FetchMode: FetchModeLogs,
 		},

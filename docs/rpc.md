@@ -205,6 +205,45 @@ blocks, err := rpc.GetBlocks(ctx, []string{"0x1", "0x2", "0x3"})
 - Maximum backoff capped at `MaxBackoff`
 - Context cancellation aborts retry loop immediately
 
+### Response Size Limits
+
+**Automatic Request Splitting:**
+When an RPC provider returns a "response too big" error (typically error code `-32008`), the processor automatically handles this by recursively splitting the requested block range into smaller chunks. The splitting process:
+
+1. Detects "response too big" errors during `eth_getLogs` requests
+2. Automatically splits the block range in half
+3. Retries each half separately
+4. Continues recursively until either:
+   - The request succeeds (response size is within limits)
+   - A single block still returns "too big" error
+
+This process is transparent and happens automatically - you'll see log messages indicating when splitting occurs.
+
+**Single Block Errors:**
+If a single block (from == to) returns a "response too big" error, this indicates a fundamental problem with the RPC endpoint itself, not the request. This typically means:
+
+- The RPC provider has very strict response size limits
+- The block contains an unusually large number of events matching your filters
+- The endpoint is misconfigured or has custom restrictions
+
+**Recommended Actions:**
+- **Switch to a different RPC provider** with higher response size limits
+- **Reduce the number of events** being indexed by narrowing `Topics` or `Addresses` filters
+- **Use a dedicated RPC node** with custom limits configured
+- **Reduce RangeSize** in processor options to prevent large requests
+
+**Provider Response Size Limits:**
+- **Alchemy**: ~10MB response limit (soft limit)
+- **Infura**: ~5MB response limit
+- **Public RPC**: Varies, often lower (1-5MB)
+- **Self-hosted nodes**: Configurable (check node settings)
+
+**Best Practices:**
+- Set `RangeSize` appropriately to avoid frequent splitting (reduces overhead)
+- Monitor logs for "too big response occur, split request" messages
+- If splitting occurs frequently, reduce `RangeSize` or switch providers
+- Use address filters to reduce the number of events per block
+
 ## Performance Characteristics
 
 ### Throughput

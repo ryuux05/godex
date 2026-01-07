@@ -90,7 +90,7 @@ func (p *Processor) fetch(ctx context.Context, chain *chainState, job BlockRange
 
 			// Record fetch time
 			rpcCtx, cancel := context.WithTimeout(ctx, chain.opts.RetryConfig.PerRequestTimeout)
-            defer cancel()
+			defer cancel()
 
 			logs, err = chain.chainInfo.RPC.GetLogs(rpcCtx, filter)
 			if err != nil {
@@ -151,13 +151,11 @@ func (p *Processor) fetch(ctx context.Context, chain *chainState, job BlockRange
 }
 
 func (p *Processor) fetchWithSplit(ctx context.Context, chain *chainState, job BlockRange) ([]types.Log, error) {
-	type rng struct{ from, to uint64 }
-
 	out := make([]types.Log, 0, 1024)
-	var walk func(from, to uint64) error
 
+	p.logger.Info("too big response occur, split request")
+	var walk func(from, to uint64) error
 	walk = func(from, to uint64) error {
-		// ctx check
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
@@ -171,35 +169,36 @@ func (p *Processor) fetchWithSplit(ctx context.Context, chain *chainState, job B
 			Address:   chain.addresses,
 		}
 
-		// IMPORTANT: use per-request timeout if you’re doing that elsewhere
 		l, err := chain.chainInfo.RPC.GetLogs(ctx, filter)
 		if err == nil {
 			out = append(out, l...)
 			return nil
 		}
-
-		// only split on "too big"
 		if !errors.IsResponseTooBigError(err) {
 			return err
 		}
-
-		// cannot split further
 		if from == to {
 			return fmt.Errorf("eth_getLogs response too big even for single block %d: %w", from, err)
 		}
 
 		mid := from + (to-from)/2
-
-		// in-order traversal: left then right => preserves block order
 		if err := walk(from, mid); err != nil {
 			return err
 		}
 		return walk(mid+1, to)
 	}
 
-	if err := walk(job.From, job.To); err != nil {
+	if job.From == job.To {
+		return nil, fmt.Errorf("cannot split single-block range %d further", job.From)
+	}
+	mid := job.From + (job.To-job.From)/2
+	if err := walk(job.From, mid); err != nil {
 		return nil, err
 	}
+	if err := walk(mid+1, job.To); err != nil {
+		return nil, err
+	}
+
 	return out, nil
 }
 
@@ -228,7 +227,7 @@ func (p *Processor) fetchTimestamps(ctx context.Context, chain *chainState, logs
 	err := rpc.RetryWithBackoff(ctx, *chain.opts.RetryConfig, func() error {
 		var err error
 		rpcCtx, cancel := context.WithTimeout(ctx, chain.opts.RetryConfig.PerRequestTimeout)
-        defer cancel()
+		defer cancel()
 		blocks, err = chain.chainInfo.RPC.GetBlocks(rpcCtx, blockNumbers)
 		return err
 	})
@@ -267,7 +266,7 @@ func (p *Processor) fetchLogsFromReceipts(ctx context.Context, from uint64, to u
 
 		s_blockNum := utils.Uint64ToHexQty(blockNum)
 		rpcCtx, cancel := context.WithTimeout(ctx, chain.opts.RetryConfig.PerRequestTimeout)
-        defer cancel()
+		defer cancel()
 		receipts, err := chain.chainInfo.RPC.GetBlockReceipts(rpcCtx, s_blockNum)
 		if err != nil {
 			return nil, fmt.Errorf("failed to get receipts for block %d: %w", blockNum, err)

@@ -184,8 +184,8 @@ func main() {
 
 	// Configure indexing options
 	opts := &core.Options{
-		RangeSize:          1, // blocks per batch
-		FetcherConcurrency: 1,    // concurrent fetchers
+		RangeSize:          150, // blocks per batch
+		FetcherConcurrency: 10,    // concurrent fetchers
 		StartBlock:         startBlock,
 		ConfirmationDepth:  0,   // wait for confirmations
 		EnableTimestamps:   true, // include block timestamps
@@ -197,7 +197,7 @@ func main() {
 		FetchMode:                core.FetchModeReceipts,
 		UseLogsForHistoricalSync: true,
 		RetryConfig: &core.RetryConfig{
-			MaxAttempts:    5,             // Increase from 3
+			MaxAttempts:    50,             // Increase from 3
 			InitialBackoff: 5 * time.Second,
 			MaxBackoff:     60 * time.Second, // Increase from 30s
 			Multiplier:     2.0,

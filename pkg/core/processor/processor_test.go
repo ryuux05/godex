@@ -2043,3 +2043,4 @@ func TestRun_WithEnableTimestamps(t *testing.T) {
 	assert.Equal(t, uint64(1700000000), event1.Timestamp) // 0x65f5a000
 	assert.Equal(t, uint64(1700000012), event2.Timestamp) // 0x65f5a00c
 }
+	

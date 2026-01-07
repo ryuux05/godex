@@ -30,7 +30,7 @@ import (
     "os"
     "os/signal"
     "syscall"
-
+    
     "github.com/jackc/pgx/v5/pgxpool"
     "github.com/ryuux05/godex/pkg/core"
     "github.com/ryuux05/godex/pkg/core/decoder"
@@ -231,15 +231,22 @@ opts.FetcherConcurrency = 10  // Down from 20
 - Fetches failing for large block ranges
 - Errors when processing blocks with many events
 
-**Solutions:**
-1. **Reduce RangeSize**: Smaller block ranges produce smaller responses
+**Automatic Handling:**
+The SDK automatically handles "response too big" errors (typically error code `-32008`) by recursively splitting the block range into smaller chunks until the response size is acceptable. This happens transparently during normal operation - you'll see log messages like "too big response occur, split request" when this occurs.
+
+**Important:** If a single block returns a "response too big" error, this indicates a fundamental problem with the RPC endpoint itself, not the request. In such cases:
+- **Switch to a different RPC provider** with higher response size limits
+- **Reduce the number of events** being indexed (narrow `Topics` or `Addresses` filters)
+- **Use a dedicated RPC node** with custom limits
+
+**Manual Solutions:**
+1. **Reduce RangeSize**: Smaller block ranges produce smaller responses (prevents splitting overhead)
 2. **Use RPC provider with larger limits**: Some providers support bigger responses
 3. **Filter more aggressively**: Use address filters to reduce event count
 4. **Switch to FetchModeReceipts**: May have different size limits (though less efficient)
-5. **Process in smaller chunks**: Break large ranges into smaller batches
 
 ```go
-// Example: Reduce range size
+// Example: Reduce range size to avoid automatic splitting
 opts.RangeSize = 100  // Down from 1000 to avoid large responses
 
 // Or use provider with larger limits

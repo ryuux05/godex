@@ -269,16 +269,24 @@ func (p *Processor) runChain(ctx context.Context, chain *chainState) error {
 	}
 
 	// Progress logging ticker
-	ticker := time.NewTicker(30 * time.Second)
-	defer ticker.Stop()
+	go func() {
+		t := time.NewTicker(30 * time.Second)
+		defer t.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.C:
+				p.logProgress(chain)
+			}
+		}
+	}()
 
 	// Main loop
 	for {
 		select {
 		case <-ctx.Done():
 			return nil
-		case <-ticker.C:
-			p.logProgress(chain)
 		default:
 		}
 

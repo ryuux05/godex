@@ -72,6 +72,9 @@ func RetryWithBackoff(ctx context.Context, config RetryConfig, fn func() error) 
 			return fmt.Errorf("non-retryable error: %w", lastErr)
 		}
 
+		if errors.IsResponseTooBigError(lastErr) {
+			return lastErr
+		}
 		// Last attempt failed - don't wait, just return
 		if attempt == config.MaxAttempts-1 {
 			break
