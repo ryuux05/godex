@@ -194,7 +194,7 @@ func decodeByType(hex string, types string) (any, error){
 	switch types {
 	case "address":
 		return decodeAddress(hex)
-	case "uint256", "uint", "int256", "int":
+	case "uint256", "uint", "int256", "int", "int128", "uint128", "uint160", "int24", "uint24":
 		return decodeBigInt(hex)
 	case "uint8", "uint16", "uint32", "uint64":
 		return decodeUint(hex)

@@ -205,11 +205,27 @@ func (p *Processor) addChain(chain ChainInfo, opts *Options, blockNum uint64, bl
 
 	// normalize all addresses before storing it
 	addressSet := make(map[string]struct{}, len(opts.Addresses))
-	addresses := make([]string, len(opts.Addresses))
-
+	addresses := make([]string, 0, len(opts.Addresses))
+	
 	for _, addr := range opts.Addresses {
-		addressSet[string(addr)] = struct{}{}
-		addresses = append(addresses, string(addr))
+		addrStr := string(addr)
+		// Normalize for internal matching (lowercase, no 0x)
+		normalized := utils.Normalize(addrStr)
+		if normalized == "" {
+			continue
+		}
+		if _, exists := addressSet[normalized]; exists {
+			continue
+		}
+		addressSet[normalized] = struct{}{}
+		
+		// For RPC filter, always use "0x" + normalized (lowercase with 0x prefix)
+		addresses = append(addresses, "0x"+normalized)
+	}
+	
+	// If no addresses, set to nil (RPC will ignore it due to omitempty)
+	if len(addresses) == 0 {
+		addresses = nil
 	}
 
 	// Check if fetch mode exists, fallback to logs as default if not specified

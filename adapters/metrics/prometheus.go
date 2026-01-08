@@ -5,7 +5,7 @@ import (
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
-	"github.com/ryuux05/godex/pkg/core"
+	"github.com/ryuux05/godex/pkg/godex"
 )
 
 type PrometheusMetrics struct {
@@ -157,4 +157,4 @@ func(m *PrometheusMetrics) IncReorgs(chainId string) {
 }
 
 // enforce go at compile time that PrometheusMetrics implements core metrics
-var _ core.Metrics = (*PrometheusMetrics)(nil)
+var _ godex.Metrics = (*PrometheusMetrics)(nil)

@@ -19,7 +19,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/ryuux05/godex/adapters/metrics"
 	"github.com/ryuux05/godex/adapters/sink/postgres"
-	"github.com/ryuux05/godex/pkg/core"
+	"github.com/ryuux05/godex/pkg/godex"
 	"github.com/ryuux05/godex/pkg/core/decoder"
 	"github.com/ryuux05/godex/pkg/core/types"
 )
@@ -132,7 +132,7 @@ func main() {
 	)
 
 	// Initialize RPC client
-	rpc := core.NewHTTPRPC(
+	rpc := godex.NewHTTPRPC(
 		rpcURL,
 		100, // requests per second
 		100,  // burst capacity
@@ -183,7 +183,7 @@ func main() {
 	}
 
 	// Configure indexing options
-	opts := &core.Options{
+	opts := &godex.Options{
 		RangeSize:          150, // blocks per batch
 		FetcherConcurrency: 10,    // concurrent fetchers
 		StartBlock:         startBlock,
@@ -194,9 +194,9 @@ func main() {
 			"0x8c5be1e5ebec7d5bd14f71427d1e84f3dd0314c0f7b2291e5b200ac8c7c3b925", // Approval(address,address,uint256)
 			}, 
 		},
-		FetchMode:                core.FetchModeReceipts,
+		FetchMode:                godex.FetchModeReceipts,
 		UseLogsForHistoricalSync: true,
-		RetryConfig: &core.RetryConfig{
+		RetryConfig: &godex.RetryConfig{
 			MaxAttempts:    50,             // Increase from 3
 			InitialBackoff: 5 * time.Second,
 			MaxBackoff:     60 * time.Second, // Increase from 30s
@@ -207,14 +207,14 @@ func main() {
 	}
 
 	// Define Ethereum mainnet
-	chain := core.ChainInfo{
+	chain := godex.ChainInfo{
 		ChainId: "592",
 		Name:    "ERC20",
 		RPC:     rpc,
 	}
 
 	// Create processor with metrics and sink
-	processor := core.NewProcessor(prometheusMetrics, sink)
+	processor := godex.NewProcessor(prometheusMetrics, sink)
 	processor.SetLogger(logger)
 
 	router := decoder.NewDecoderRouter().Register(decoder.ByTopicCount(3), "ERC20", dec)

@@ -106,7 +106,7 @@ decoder.RegisterABI("ERC20", erc20ABI)
 
 // Register ERC721 ABI with identifier "ERC721"
 decoder.RegisterABI("ERC721", erc721ABI)
-
+ 
 // Register custom contract ABI
 decoder.RegisterABI("MyContract", myContractABI)
 ```
