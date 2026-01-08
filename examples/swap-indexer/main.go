@@ -36,6 +36,8 @@ func (h *UniswapHandler) Handle(ctx context.Context, tx pgx.Tx, event types.Even
 	switch event.EventType {
 	case "Swap":
 		return h.handleSwap(ctx, tx, event)
+	case "Initialize":
+		return h.handleInitialize(ctx, tx, event)
 	}
 
 	return nil
@@ -46,6 +48,7 @@ func (h *UniswapHandler) handleSwap(ctx context.Context, tx pgx.Tx, event types.
 	txHash := event.TransactionHash
 	blockNum := event.BlockNumber
 	timestamp := event.Timestamp
+	chainId := event.ChainId
 
 	// Extract fields
 	var sender string
@@ -100,7 +103,7 @@ func (h *UniswapHandler) handleSwap(ctx context.Context, tx pgx.Tx, event types.
 	// Compute human-readable values
 	amount0Abs := absBigInt(amount0)
 	amount1Abs := absBigInt(amount1)
-	
+
 	// Determine swap direction (simplified: positive amount0 = buy token0, negative = sell)
 	direction := "sell"
 	if amount0.Sign() > 0 {
@@ -121,11 +124,28 @@ func (h *UniswapHandler) handleSwap(ctx context.Context, tx pgx.Tx, event types.
 		feeTier = &ft
 	}
 
-	chainId := event.ChainId
+	// Look up or create pool record to get token addresses
+	var token0Address, token1Address string
+	err := tx.QueryRow(ctx, `
+		SELECT token0_address, token1_address
+		FROM uniswap_pools
+		WHERE pool_id = $1 AND chain_id = $2
+	`, poolID, chainId).Scan(&token0Address, &token1Address)
+
+	if err == pgx.ErrNoRows {
+		// Pool not found - need to look it up from PoolManager contract
+		// For now, set to NULL - you'll need to implement pool lookup
+		// Option 1: Make RPC call to PoolManager.getPoolInfo(pool_id)
+		// Option 2: Track pools when they're created via PoolInitialize event
+		token0Address = ""
+		token1Address = ""
+	} else if err != nil {
+		return fmt.Errorf("failed to lookup pool: %w", err)
+	}
 
 	// Store swap in database
 	var swapID int64
-	err := tx.QueryRow(ctx, `
+	err = tx.QueryRow(ctx, `
 		INSERT INTO uniswap_swaps (
 			chain_id, contract_address, tx_hash, block_number, timestamp, block_timestamp,
 			pool_id, fee_tier,
@@ -133,9 +153,9 @@ func (h *UniswapHandler) handleSwap(ctx context.Context, tx pgx.Tx, event types.
 			amount0_raw, amount1_raw,
 			amount0_abs, amount1_abs,
 			direction,
-			sqrt_price_x96, liquidity, tick,
+			sqrt_price_x96, price, liquidity, tick,
 			amount0_in, amount1_in, amount0_out, amount1_out
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23)
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24)
 		ON CONFLICT (chain_id, tx_hash, contract_address, block_number) DO NOTHING
 		RETURNING id
 	`,
@@ -145,7 +165,7 @@ func (h *UniswapHandler) handleSwap(ctx context.Context, tx pgx.Tx, event types.
 		amount0.String(), amount1.String(),
 		amount0Abs.String(), amount1Abs.String(),
 		direction,
-		nullBigInt(sqrtPriceX96), nullBigInt(liquidity), nullInt(tick),
+		nullBigInt(sqrtPriceX96), nil, nullBigInt(liquidity), nullInt(tick), // price is computed, set to NULL for now
 		nil, nil, nil, nil, // V2/V3 fields
 	).Scan(&swapID)
 
@@ -181,6 +201,97 @@ func (h *UniswapHandler) handleSwap(ctx context.Context, tx pgx.Tx, event types.
 		h.logger.Warn("failed to connect swaps", slog.Any("error", err))
 		return nil
 	}
+
+	return nil
+}
+
+func (h *UniswapHandler) handleInitialize(ctx context.Context, tx pgx.Tx, event types.Event) error {
+	// Extract pool initialization data
+	var poolID string
+	var currency0, currency1 string
+	var fee, tickSpacing, tick *big.Int
+	var hooks string
+	var sqrtPriceX96 *big.Int
+
+	// Extract pool ID (bytes32, indexed)
+	if id, ok := event.Fields["id"].(string); ok {
+		poolID = id
+	} else if idBytes, ok := event.Fields["id"].([]byte); ok {
+		poolID = fmt.Sprintf("0x%x", idBytes)
+	} else {
+		return fmt.Errorf("invalid 'id' field type: %T", event.Fields["id"])
+	}
+
+	// Extract currency0 (address, indexed)
+	if c0, ok := event.Fields["currency0"].(string); ok {
+		currency0 = c0
+	} else {
+		return fmt.Errorf("invalid 'currency0' field type: %T", event.Fields["currency0"])
+	}
+
+	// Extract currency1 (address, indexed)
+	if c1, ok := event.Fields["currency1"].(string); ok {
+		currency1 = c1
+	} else {
+		return fmt.Errorf("invalid 'currency1' field type: %T", event.Fields["currency1"])
+	}
+
+	// Extract fee (uint24)
+	if f, ok := event.Fields["fee"].(*big.Int); ok {
+		fee = f
+	}
+
+	// Extract tickSpacing (int24)
+	if ts, ok := event.Fields["tickSpacing"].(*big.Int); ok {
+		tickSpacing = ts
+	}
+
+	// Extract hooks (address)
+	if h, ok := event.Fields["hooks"].(string); ok {
+		hooks = h
+	}
+
+	// Extract sqrtPriceX96 (uint160)
+	if sp, ok := event.Fields["sqrtPriceX96"].(*big.Int); ok {
+		sqrtPriceX96 = sp
+	}
+
+	// Extract tick (int24)
+	if t, ok := event.Fields["tick"].(*big.Int); ok {
+		tick = t
+	}
+
+	chainId := event.ChainId
+	blockNum := event.BlockNumber
+
+	// Store or update pool in database
+	_, err := tx.Exec(ctx, `
+		INSERT INTO uniswap_pools (
+			pool_id, chain_id, token0_address, token1_address, fee_tier, tick_spacing,
+			hooks_address, sqrt_price_x96, tick,
+			first_seen_block, last_seen_block
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $10)
+		ON CONFLICT (pool_id) 
+		DO UPDATE SET
+			last_seen_block = GREATEST(uniswap_pools.last_seen_block, $10),
+			updated_at = NOW()
+	`,
+		poolID, chainId, currency0, currency1,
+		nullInt(fee), nullInt(tickSpacing),
+		nullString(hooks), nullBigInt(sqrtPriceX96), nullInt(tick),
+		blockNum,
+	)
+
+	if err != nil {
+		return fmt.Errorf("failed to store pool: %w", err)
+	}
+
+	h.logger.Info("pool initialized",
+		slog.String("pool_id", poolID),
+		slog.String("token0", currency0),
+		slog.String("token1", currency1),
+		slog.String("chain_id", chainId),
+	)
 
 	return nil
 }
@@ -324,15 +435,6 @@ func main() {
 	ethStartBlock := getEnvUint64("ETH_START_BLOCK", 21000000)  // Approximate V4 deployment - VERIFY
 	arbStartBlock := getEnvUint64("ARB_START_BLOCK", 250000000) // Approximate V4 deployment - VERIFY
 
-	logger.Info("initializing cross-chain Uniswap V4 indexer",
-		slog.String("eth_rpc_url", ethRPCURL),
-		slog.String("arb_rpc_url", arbRPCURL),
-		slog.String("database_url", maskPassword(databaseURL)),
-		slog.Uint64("eth_start_block", ethStartBlock),
-		slog.Uint64("arb_start_block", arbStartBlock),
-		slog.String("note", "V4 launched Jan 31, 2025 - verify deployment blocks"),
-	)
-
 	// Initialize RPC clients
 	ethRPC := godex.NewHTTPRPC(
 		ethRPCURL,
@@ -401,9 +503,10 @@ func main() {
 		Topics: [][]string{
 			{
 				"0x40e9cecb9f5f1f1c5b9c97dec2917b7ee92e57ba5563708daca94dd84ad7112f",
+				"0xdd466e674ea557f56295e2d0218a125ea4b4f0f6f3307b95f85e6110838d6438",
 			},
 		},
-		Addresses: []string {
+		Addresses: []string{
 			"0x000000000004444c5dc75cb358380d2e3de08a90",
 		},
 		FetchMode:                godex.FetchModeLogs,
@@ -428,9 +531,10 @@ func main() {
 		Topics: [][]string{
 			{
 				"0x40e9cecb9f5f1f1c5b9c97dec2917b7ee92e57ba5563708daca94dd84ad7112f",
+				"0xdd466e674ea557f56295e2d0218a125ea4b4f0f6f3307b95f85e6110838d6438",
 			},
 		},
-		Addresses: []string {
+		Addresses: []string{
 			"0x360e68faccca8ca495c1b759fd9eee466db9fb32",
 		},
 		FetchMode:                godex.FetchModeLogs,
@@ -463,7 +567,9 @@ func main() {
 	processor.SetLogger(logger)
 
 	// Use decoder router to match Swap events (3 topics: event signature, pool id, sender)
-	router := decoder.NewDecoderRouter().Register(decoder.ByTopicCount(3), "Uniswap", dec)
+	router := decoder.NewDecoderRouter().
+		Register(decoder.ByTopicCount(3), "Uniswap", dec). // Swap event (id, sender)
+		Register(decoder.ByTopicCount(4), "Uniswap", dec)  // Initialize event (id, currency0, currency1)
 
 	// Register Ethereum chain
 	err = processor.AddChain(ethChain, ethOpts, router)

@@ -56,6 +56,49 @@ CREATE INDEX IF NOT EXISTS idx_swaps_sender ON uniswap_swaps(sender);
 CREATE INDEX IF NOT EXISTS idx_swaps_timestamp ON uniswap_swaps(block_timestamp);
 CREATE INDEX IF NOT EXISTS idx_swaps_direction ON uniswap_swaps(direction);
 
+-- Pools Table - tracks pool_id to token addresses mapping
+-- Uniswap V4 Pools Table
+CREATE TABLE IF NOT EXISTS uniswap_pools (
+    pool_id VARCHAR(66) PRIMARY KEY,  -- bytes32 as hex string
+    chain_id VARCHAR(20) NOT NULL,
+    
+    -- Token addresses (from Initialize event)
+    token0_address VARCHAR(42) NOT NULL,
+    token1_address VARCHAR(42) NOT NULL,
+    
+    -- Pool configuration
+    fee_tier INTEGER NOT NULL,      -- uint24 fee (e.g., 500 = 0.05%)
+    tick_spacing INTEGER,           -- int24 spacing between ticks
+    hooks_address VARCHAR(42),      -- address of hooks contract
+    
+    -- Initial state
+    sqrt_price_x96 TEXT,            -- uint160 initial sqrt price
+    tick INTEGER,                   -- int24 initial tick
+    
+    -- Block tracking
+    first_seen_block BIGINT NOT NULL,
+    last_seen_block BIGINT NOT NULL,
+    
+    -- Timestamps
+    created_at TIMESTAMP DEFAULT NOW(),
+    updated_at TIMESTAMP DEFAULT NOW(),
+    
+    UNIQUE(chain_id, pool_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_pools_chain ON uniswap_pools(chain_id);
+CREATE INDEX IF NOT EXISTS idx_pools_token0 ON uniswap_pools(token0_address);
+CREATE INDEX IF NOT EXISTS idx_pools_token1 ON uniswap_pools(token1_address);
+CREATE INDEX IF NOT EXISTS idx_pools_tokens ON uniswap_pools(token0_address, token1_address);
+
+-- Add token columns to swaps table
+ALTER TABLE uniswap_swaps 
+    ADD COLUMN IF NOT EXISTS token0_address VARCHAR(42),
+    ADD COLUMN IF NOT EXISTS token1_address VARCHAR(42);
+
+CREATE INDEX IF NOT EXISTS idx_swaps_token0 ON uniswap_swaps(token0_address);
+CREATE INDEX IF NOT EXISTS idx_swaps_token1 ON uniswap_swaps(token1_address);
+
 -- Pool Statistics Table
 CREATE TABLE IF NOT EXISTS uniswap_pool_stats (
     chain_id VARCHAR(20) NOT NULL,
