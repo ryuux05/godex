@@ -28,6 +28,11 @@ type PGSink struct {
 	metrics       metrics.Metrics
 }
 
+const (
+	// threshold to switch to COPY for bulk inserting
+	DefaultCopyThreshold = 32
+)
+
 const upsertCursorSQL = `
 INSERT INTO chronicle_cursors (chain_id, block_num, block_hash)
 VALUES ($1, $2, $3)
@@ -47,12 +52,12 @@ func NewSink(cfg SinkConfig) (*PGSink, error) {
 
 	m := cfg.Metrics
 	if m == nil {
-		m = metrics.Noop{} // or expose a constructor for this
+		m = metrics.Noop{} 
 	}
 
 	// the performance after 32 rows with copy will show improvement
 	if cfg.CopyThreshold <= 0 {
-		cfg.CopyThreshold = 32 // or 64
+		cfg.CopyThreshold = DefaultCopyThreshold
 	}
 
 	pgSink := &PGSink{db: cfg.Pool, handler: cfg.Handler, copyThreshold: cfg.CopyThreshold, metrics: m}

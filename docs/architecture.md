@@ -1,47 +1,27 @@
-# Indexer Architecture
+# Architecture
 
 godex implements a high-performance producer-consumer pipeline with concurrent fetching, ordered processing, and fault-tolerant storage designed for production blockchain indexing.
 
-## System Overview
+## System Architecture
 
-```mermaid
-flowchart LR
-  subgraph SDKCore["SDK Core"]
-    subgraph Processor["Processor (per chain)"]
-      F["Fetchers\n- concurrent RPC\n- batch requests\n- rate limiting"]
-      A["Arbiter\n- ordered processing\n- reorg detection\n- LRU hash cache"]
-      DEC["Decoder\n- ABI-based\n- event transformation"]
-      RPC["RPC Client\n(HTTP + retry)"]
-      F -->|"GetLogs/GetBlocks"| RPC
-    end
-
-    SINK_IF["Sink interface\n(Store, Rollback, LoadCursor)"]
-  end
-
-  subgraph Adapters["Adapters / Implementations"]
-    PSINK["PostgresSink\n- atomic storage\n- tx rollback\n- cursor persistence"]
-    METRICS["Metrics (Prometheus)\n- counters/gauges/histograms"]
-  end
-
-  subgraph UserApp["User Application"]
-    APP["Application\n- configures chains\n- provides decoder\n- handles events"]
-  end
-
-  %% Data flow
-  APP -->|"NewProcessor(metrics, sink)"| Processor
-  APP -->|"AddChain(chain, opts, decoder)"| Processor
-  F -->|"raw logs + timestamps"| A
-  A -->|"decoded events"| DEC
-  DEC -->|"structured events"| SINK_IF
-  SINK_IF --> PSINK
-
-  %% Metrics flow
-  F -->|"ObservedBlockFetchDuration"| METRICS
-  A -->|"IncReorgs"| METRICS
-  PSINK -->|"IncSinkWrites/Errors\nObservedSinkWriteDuration\nSetIndexedHeight"| METRICS
-
-  %% External
-  RPC ---|"JSON-RPC calls"| CHAIN["Blockchain node(s)"]
+```
+┌─────────────────────────────────────────────────────────────────────────────────────┐
+│                               Processor Core                                        │
+│  ┌────────────┐  ┌────────────┐  ┌─────────────┐  ┌─────────────────────────────┐ │
+│  │  Fetchers  │──│   Arbiter  │──│ Decoder     │──│           Sink             │ │
+│  │ (Concurrent│  │ (Sequenced │  │ Router      │  │ (PostgreSQL, etc.)        │ │
+│  │   RPC)     │  │   Queue)   │  │ (Routing)   │  │                             │ │
+│  └────────────┘  └────────────┘  └─────────────┘  └─────────────────────────────┘ │
+└─────────────────────────────────────────────────────────────────────────────────────┘
+                                      │
+                                      ▼
+┌─────────────────────────────────────────────────────────────────────────────────────┐
+│                            Per-Chain Processing                                    │
+│  ┌────────────┐  ┌────────────┐  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐ │
+│  │ Chain 1    │  │ Chain 2    │  │ Chain N     │  │ Metrics     │  │ Logging     │ │
+│  │ State      │  │ State      │  │ State       │  │ Collection  │  │ & Health    │ │
+│  └────────────┘  └────────────┘  └─────────────┘  └─────────────┘  └─────────────┘ │
+└─────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
 ## Core Components
@@ -72,9 +52,16 @@ Persistent storage abstraction with transactional rollback support.
 
 ```go
 type Sink interface {
+    // Store persists a batch of events atomically
     Store(ctx context.Context, events []types.Event) error
+
+    // Rollback removes events from specified block onwards during reorgs
     Rollback(ctx context.Context, chainId string, toBlock uint64, blockHash string) error
+
+    // LoadCursor retrieves the last processed block for resumption
     LoadCursor(ctx context.Context, chainId string) (blockNum uint64, blockHash string, err error)
+
+    // UpdateCursor stores the current block number and hash
     UpdateCursor(ctx context.Context, chainId string, newBlock uint64, blockHash string) error
 }
 ```
@@ -85,7 +72,10 @@ Event transformation with pluggable ABI support.
 
 ```go
 type Decoder interface {
+    // Decode transforms a single log into a structured event
     Decode(name string, chainId string, log types.Log) (*types.Event, error)
+
+    // DecodeBatch processes multiple logs efficiently (optional optimization)
     DecodeBatch(logs []types.Log) (*[]types.Event, error)
 }
 ```
@@ -99,9 +89,36 @@ type DecoderRouter struct {
     routes []DecoderRoute
 }
 
+// Create new router instance
 func NewDecoderRouter() *DecoderRouter
+
+// Register decoder with match condition
 func (r *DecoderRouter) Register(match MatchFunc, abiName string, dec Decoder) *DecoderRouter
+
+// Implements Decoder interface with intelligent routing
 func (r *DecoderRouter) Decode(chainId string, log types.Log) (*types.Event, error)
+```
+
+### Match Functions
+
+Configurable conditions for routing logs to decoders.
+
+```go
+type MatchFunc func(log types.Log) bool
+
+// Topic count matching
+func ByTopicCount(count int) MatchFunc
+
+// Address-based matching
+func ByAddress(address string) MatchFunc
+func ByAddresses(addresses []string) MatchFunc
+
+// Event signature matching
+func ByTopic0(topic0 string) MatchFunc
+
+// Logical combinations
+func And(matchers ...MatchFunc) MatchFunc
+func Or(matchers ...MatchFunc) MatchFunc
 ```
 
 ### RPC Interface
@@ -110,10 +127,19 @@ Blockchain node communication with batching and rate limiting.
 
 ```go
 type RPC interface {
+    // Head retrieves the latest block number
     Head(ctx context.Context) (string, error)
+
+    // GetBlock fetches a single block header
     GetBlock(ctx context.Context, blockNumber string) (types.Block, error)
+
+    // GetBlocks fetches multiple blocks in a single batch request
     GetBlocks(ctx context.Context, blockNumbers []string) (map[string]types.Block, error)
+
+    // GetLogs retrieves logs matching filter criteria
     GetLogs(ctx context.Context, filter types.Filter) ([]types.Log, error)
+
+    // GetBlockReceipts fetches transaction receipts for a block
     GetBlockReceipts(ctx context.Context, blockNumber string) ([]types.Receipt, error)
 }
 ```
@@ -124,17 +150,46 @@ Observability and monitoring interface.
 
 ```go
 type Metrics interface {
+    // Block processing metrics
     IncBlocksProcessed(chainId string, n uint64)
     ObservedBlockLag(chainId string, lag uint64)
     ObservedBlockFetchDuration(chainId string, d time.Duration, success bool)
-    SetIndexedHeight(chainId string, height uint64)
+
+    // Storage metrics
     IncSinkWrites(chainId string, n uint64)
     IncSinkErrors(chainId string)
     ObservedSinkWriteDuration(chainId string, d time.Duration, success bool)
+
+    // Indexer state
+    SetIndexedHeight(chainId string, height uint64)
     SetProcessorConcurrency(chainId string, n uint64)
     IncReorgs(chainId string)
 }
 ```
+
+## Reorganization Handling
+
+Blockchain reorganizations are automatically detected and resolved with minimal data loss and efficient recovery.
+
+**Detection Mechanism:**
+1. Maintains LRU cache of processed block hashes (`BlockHashCache`)
+2. Verifies parent hash continuity during sequential window processing
+3. Detects divergence when `block.ParentHash != cachedHash[block.Number-1]`
+
+**Recovery Process:**
+1. **Ancestor Search**: Binary search backward through cached hashes to find common ancestor
+2. **Sink Rollback**: Call `sink.Rollback(chainId, ancestor, blockHash)` to remove orphaned events atomically
+3. **State Reset**: Update cursor to ancestor block and clear future hash cache entries
+4. **Resume Processing**: Restart from ancestor + 1 with fresh batch processing
+
+**Performance Characteristics:**
+- O(1) hash lookups via LRU cache
+- Bounded memory usage with configurable cache size
+- Minimal RPC overhead (only fetches headers during reorg detection)
+
+**Configuration Options:**
+- `ReorgLookbackBlocks`: Maximum blocks to examine (default: 64, balances detection range vs memory)
+- `ConfirmationDepth`: Blocks to wait before processing (higher = fewer reorgs but increased latency)
 
 ## Concurrency Model
 
@@ -163,26 +218,6 @@ type Metrics interface {
 - Different options per chain (range size, concurrency, confirmation depth)
 - Chain-specific retry configurations and rate limits
 - Independent progress tracking and metrics collection
-
-## Reorganization Handling
-
-Blockchain reorganizations are automatically detected and resolved with minimal data loss and efficient recovery.
-
-**Detection Mechanism:**
-1. Maintains LRU cache of processed block hashes (`BlockHashCache`)
-2. Verifies parent hash continuity during sequential window processing
-3. Detects divergence when `block.ParentHash != cachedHash[block.Number-1]`
-
-**Recovery Process:**
-1. **Ancestor Search**: Binary search backward through cached hashes to find common ancestor
-2. **Sink Rollback**: Call `sink.Rollback(chainId, ancestor, blockHash)` to remove orphaned events atomically
-3. **State Reset**: Update cursor to ancestor block and clear future hash cache entries
-4. **Resume Processing**: Restart from ancestor + 1 with fresh batch processing
-
-**Performance Characteristics:**
-- O(1) hash lookups via LRU cache
-- Bounded memory usage with configurable cache size
-- Minimal RPC overhead (only fetches headers during reorg detection)
 
 ## Error Handling Architecture
 
@@ -236,3 +271,4 @@ For detailed documentation on specific components, see:
 - [Decoder Architecture](decoder.md)
 - [RPC Architecture](rpc.md)
 - [Sink Architecture](sink.md)
+

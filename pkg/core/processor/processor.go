@@ -19,6 +19,11 @@ import (
 	"golang.org/x/sync/errgroup"
 )
 
+const (
+	// block to fallback during reorg incase there is no ancestor found
+	DefaultHardFallbackBlocks = 1000
+)
+
 type chainState struct {
 	// chainInfo stores chain information where the indexer going to query
 	// Specify RPC (endpoint and rate-limit)
@@ -41,12 +46,14 @@ type chainState struct {
 	// State of the processor of each chain
 	// Is it syncing historical block or live block
 	isLive bool
-
 	// options for processor
 	opts *Options
-
 	//chain Progress
 	progress *chainProgress
+	// store the last err occured
+	lastErr string
+	// store time last error occured
+	lastErrAt time.Time
 }
 
 type Processor struct {
@@ -124,11 +131,17 @@ func (p *Processor) GetChain(chainId string) ChainInfo {
 }
 
 func (p *Processor) Run(ctx context.Context) error {
+	p.mu.Lock()
 	p.isRunning = true
-	defer func() { p.isRunning = false }()
+	p.mu.Unlock()
+	defer func() { 
+		p.mu.Lock()
+		p.isRunning = false
+		p.mu.Unlock()
+	}()
 
 	g := errgroup.Group{}
-	for chainId, chain := range p.chains {
+	for chainId, chain := range p.chains {	
 		id := chainId
 		c := chain
 		//ch := p.logsCh[id]
@@ -192,11 +205,27 @@ func (p *Processor) addChain(chain ChainInfo, opts *Options, blockNum uint64, bl
 
 	// normalize all addresses before storing it
 	addressSet := make(map[string]struct{}, len(opts.Addresses))
-	addresses := make([]string, len(opts.Addresses))
-
+	addresses := make([]string, 0, len(opts.Addresses))
+	
 	for _, addr := range opts.Addresses {
-		addressSet[string(addr)] = struct{}{}
-		addresses = append(addresses, string(addr))
+		addrStr := string(addr)
+		// Normalize for internal matching (lowercase, no 0x)
+		normalized := utils.Normalize(addrStr)
+		if normalized == "" {
+			continue
+		}
+		if _, exists := addressSet[normalized]; exists {
+			continue
+		}
+		addressSet[normalized] = struct{}{}
+		
+		// For RPC filter, always use "0x" + normalized (lowercase with 0x prefix)
+		addresses = append(addresses, "0x"+normalized)
+	}
+	
+	// If no addresses, set to nil (RPC will ignore it due to omitempty)
+	if len(addresses) == 0 {
+		addresses = nil
 	}
 
 	// Check if fetch mode exists, fallback to logs as default if not specified
@@ -215,7 +244,7 @@ func (p *Processor) addChain(chain ChainInfo, opts *Options, blockNum uint64, bl
 		opts:               opts,
 		cursor:             cursor,
 		blockHashCache:     NewBlockHashCache(int(cap)),
-		hardFallbackBlocks: 1000,
+		hardFallbackBlocks: uint64(DefaultHardFallbackBlocks),
 		topics:             topics,
 		addresses:          addresses,
 		addressSet:         addressSet,
@@ -256,20 +285,32 @@ func (p *Processor) runChain(ctx context.Context, chain *chainState) error {
 	}
 
 	// Progress logging ticker
-	ticker := time.NewTicker(30 * time.Second)
-	defer ticker.Stop()
+	go func() {
+		t := time.NewTicker(30 * time.Second)
+		defer t.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.C:
+				p.logProgress(chain)
+			}
+		}
+	}()
 
 	// Main loop
 	for {
 		select {
 		case <-ctx.Done():
 			return nil
-		case <-ticker.C:
-			p.logProgress(chain)
 		default:
 		}
 
 		if err := p.processBatch(ctx, chain); err != nil {
+			// store err and the time it occured
+			chain.lastErr = err.Error()
+			chain.lastErrAt = time.Now()
+
 			if err == context.Canceled {
 				p.logger.Info("context canceled, stopping chain processing")
 				return nil
@@ -298,6 +339,20 @@ func (p *Processor) processBatch(ctx context.Context, chain *chainState) error {
 	jobs, head, err := p.planJobs(batchCtx, chain)
 	if err != nil {
 		return fmt.Errorf("failed to plan jobs: %w", err)
+	}
+
+	// metrics: set processor concurrency
+	p.metrics.SetProcessorConcurrency(chain.chainInfo.ChainId, uint64(chain.opts.FetcherConcurrency))
+
+	// metrics: Observe block lag
+	currentBlock := chain.cursor.BlockNum
+	target := head - chain.opts.ConfirmationDepth
+	if target > currentBlock {
+		lag := target - currentBlock
+		p.metrics.ObservedBlockLag(chain.chainInfo.ChainId, lag)
+	} else {
+		// Caught up - lag is 0
+		p.metrics.ObservedBlockLag(chain.chainInfo.ChainId, 0)
 	}
 
 	// Fetch the job that has been planned and return the results
@@ -375,7 +430,9 @@ func (p *Processor) checkCursorOnResume(ctx context.Context, chain *chainState) 
 				chain.cursor.BlockNum = ancestor
 				chain.cursor.BlockHash = hash
 
-				if err := p.sink.Rollback(ctx, chain.chainInfo.ChainId, ancestor, hash); err != nil {
+				rollBackCtx, cancel := context.WithTimeout(context.Background(), 30 * time.Second)
+				defer cancel()
+				if err := p.sink.Rollback(rollBackCtx, chain.chainInfo.ChainId, ancestor, hash); err != nil {
 					p.logger.Error("failed to rollback sink", slog.String("chain_id", chain.chainInfo.ChainId), slog.Any("error", err))
 				}
 			}

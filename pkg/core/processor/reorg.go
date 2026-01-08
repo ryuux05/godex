@@ -143,11 +143,15 @@ func (p *Processor) handleReorg(ctx context.Context, chain *chainState) (uint64,
 			return ancestor, expectedHash
 		}
 
-		// Step back by one window (your invariant)
+		// Step back by one window 
 		if ancestor < uint64(chain.opts.RangeSize) {
 			ancestor = 0
 		} else {
-			ancestor -= uint64(chain.opts.RangeSize)
+			if chain.isLive {
+				ancestor -= uint64(1)
+			} else {
+				ancestor -= uint64(chain.opts.RangeSize)
+			}
 		}
 
 		select {

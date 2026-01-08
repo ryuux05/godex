@@ -1,17 +1,15 @@
 # godex
 
-A high-performance, production-ready blockchain indexing SDK written in Go for building scalable EVM-compatible blockchain indexers. Features automatic reorganization handling, intelligent multi-contract event routing, concurrent multi-chain processing, and structured event persistence with comprehensive observability.
+A high-performance, production-ready blockchain indexing SDK written in Go for building scalable EVM-compatible blockchain indexers. Features automatic reorganization handling, intelligent multi-contract event routing, concurrent multi-chain processing, and structured event persistence.
 
 ## Features
 
-- **Concurrent Multi-Chain Indexing**: Process events across multiple EVM-compatible chains simultaneously with individual chain isolation
-- **Automatic Reorganization Handling**: Built-in detection and rollback for blockchain reorganizations with efficient ancestor recovery
-- **Intelligent Event Routing**: DecoderRouter enables complex multi-contract scenarios with configurable match conditions
-- **High-Performance Processing**: Concurrent fetching with configurable worker pools, batch RPC requests, and natural backpressure
-- **Production-Ready Storage**: Transactional event persistence with atomic rollback support and cursor management
-- **Flexible Event Decoding**: Pluggable ABI-based decoders with support for multiple contract standards
+- **Concurrent Multi-Chain Indexing**: Process events across multiple EVM-compatible chains simultaneously
+- **Automatic Reorganization Handling**: Built-in detection and rollback for blockchain reorganizations
+- **Intelligent Event Routing**: DecoderRouter enables complex multi-contract scenarios
+- **High-Performance Processing**: Concurrent fetching with configurable worker pools and batch RPC requests
+- **Production-Ready Storage**: Transactional event persistence with atomic rollback support
 - **Comprehensive Observability**: Structured logging, metrics collection, and health monitoring
-- **Resilient Error Handling**: Automatic retry with exponential backoff, context-aware cancellation, and graceful shutdown
 
 ## Installation
 
@@ -21,7 +19,7 @@ go get github.com/ryuux05/godex
 
 ## Quick Start
 
-### Basic ERC20 Indexer Setup
+### Basic Setup
 
 ```go
 package main
@@ -30,190 +28,56 @@ import (
     "context"
     "log/slog"
     "os"
-
+    "os/signal"
+    "syscall"
+    
+    "github.com/jackc/pgx/v5/pgxpool"
     "github.com/ryuux05/godex/pkg/core"
     "github.com/ryuux05/godex/pkg/core/decoder"
     "github.com/ryuux05/godex/adapters/sink/postgres"
 )
 
 func main() {
-    // Initialize RPC client with rate limiting
+    // Initialize RPC client
     rpc := core.NewHTTPRPC("https://eth-mainnet.g.alchemy.com/v2/YOUR_KEY", 20, 5)
 
-    // Initialize PostgreSQL sink for event storage
-    sink, err := postgres.NewPostgresSink(context.Background(),
-        "postgres://user:pass@localhost:5432/godex?sslmode=disable")
-    if err != nil {
-        log.Fatal(err)
-    }
+    // Initialize PostgreSQL sink
+    pool, _ := pgxpool.New(context.Background(), "postgres://user:pass@localhost:5432/godex")
+    handler := &MyEventHandler{}
+    sink, _ := postgres.NewSink(postgres.SinkConfig{
+        Pool:    pool,
+        Handler: handler,
+    })
 
-    // Configure indexing parameters
+    // Configure indexing options
     opts := &core.Options{
-        RangeSize:              1000,  // Process 1000 blocks per batch
-        FetcherConcurrency:     4,     // 4 concurrent RPC workers
-        StartBlock:             18000000,
-        ConfirmationDepth:      12,    // Wait 12 blocks for reorg safety
-        EnableTimestamps:       true,  // Include block timestamps
+        RangeSize:          1000,
+        FetcherConcurrency: 4,
+        StartBlock:         18000000,
+        ConfirmationDepth:  12,
         Topics: [][]string{{
-            "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef", // Transfer
+            "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef",
         }},
-        FetchMode:                core.FetchModeLogs,
-        UseLogsForHistoricalSync: true,
     }
 
-    // Define Ethereum mainnet configuration
-    ethereumChain := core.ChainInfo{
+    // Setup decoder
+    dec := decoder.NewStandardDecoder()
+    dec.RegisterABI("ERC20", erc20ABI)  // Load ABI from file or embed
+
+    // Create and run processor
+    processor := core.NewProcessor(nil, sink)
+    processor.SetLogger(slog.Default())
+
+    processor.AddChain(core.ChainInfo{
         ChainId: "1",
         Name:    "Ethereum",
         RPC:     rpc,
-    }
+    }, opts, dec)
 
-    // Initialize standard decoder and register ERC20 ABI
-    dec := decoder.NewStandardDecoder()
-    if err := dec.RegisterABI("ERC20", erc20ABI); err != nil {
-        log.Fatal(err)
-    }
-
-    // Create processor with metrics and sink
-    processor := core.NewProcessor(nil, sink)
-
-    // Configure structured JSON logging
-    logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
-        Level: slog.LevelInfo,
-    }))
-    processor.SetLogger(logger)
-
-    // Register chain with decoder
-    if err := processor.AddChain(ethereumChain, opts, dec); err != nil {
-        log.Fatal(err)
-    }
-
-    // Start continuous indexing with graceful shutdown
     ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
     defer cancel()
 
-    if err := processor.Run(ctx); err != nil && err != context.Canceled {
-        log.Fatal(err)
-    }
-}
-```
-
-### Multi-Contract Indexer with Router
-
-```go
-// Create decoder router for multiple contract types
-router := decoder.NewDecoderRouter()
-
-// ERC20 contracts: 3 topics, Transfer event
-router.Register(
-    decoder.And(
-        decoder.ByTopicCount(3),
-        decoder.ByTopic0("0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"),
-    ),
-    "ERC20",
-    erc20Decoder,
-)
-
-// ERC721 contracts: 4 topics, Transfer event
-router.Register(
-    decoder.And(
-        decoder.ByTopicCount(4),
-        decoder.ByTopic0("0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"),
-    ),
-    "ERC721",
-    erc721Decoder,
-)
-
-// Specific DEX contracts
-router.Register(
-    decoder.ByAddresses([]string{"0xUniswapV2", "0xSushiSwap"}),
-    "DEX",
-    dexDecoder,
-)
-
-// Register with processor
-processor.AddChain(chainInfo, options, router)
-```
-
-### Multi-Chain Indexing
-
-```go
-// Create processor with shared PostgreSQL sink and metrics
-processor := core.NewProcessor(metrics, sharedSink)
-
-// Configure Ethereum mainnet with optimized settings
-ethereumOpts := &core.Options{
-    RangeSize:              1000,  // Larger batches for high-throughput chain
-    FetcherConcurrency:     4,     // Match RPC provider limits
-    StartBlock:             18000000,
-    ConfirmationDepth:      12,    // Standard reorg protection
-    EnableTimestamps:       true,
-    Topics: [][]string{{
-        "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef", // Transfer
-    }},
-    FetchMode:                core.FetchModeLogs,
-    UseLogsForHistoricalSync: true,
-    RetryConfig: &core.RetryConfig{
-        MaxAttempts:    5,
-        InitialBackoff: 5 * time.Second,
-        MaxBackoff:     60 * time.Second,
-        Multiplier:     2.0,
-        EnableJitter:   true,
-    },
-}
-
-ethereumChain := core.ChainInfo{
-    ChainId: "1",
-    Name:    "Ethereum",
-    RPC:     core.NewHTTPRPC("https://eth-mainnet.g.alchemy.com/v2/YOUR_KEY", 20, 5),
-}
-
-// Configure Polygon with chain-appropriate settings
-polygonOpts := &core.Options{
-    RangeSize:              2000,  // Larger batches for faster catch-up
-    FetcherConcurrency:     2,     // Conservative for smaller chain
-    StartBlock:             40000000,
-    ConfirmationDepth:      100,   // Higher for faster finality
-    EnableTimestamps:       true,
-    Topics: [][]string{{
-        "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef",
-    }},
-    FetchMode:                core.FetchModeLogs,
-    UseLogsForHistoricalSync: true,
-}
-
-polygonChain := core.ChainInfo{
-    ChainId: "137",
-    Name:    "Polygon",
-    RPC:     core.NewHTTPRPC("https://polygon-rpc.com", 15, 3),
-}
-
-// Create decoder routers for multi-contract support
-ethereumRouter := createEthereumRouter()
-polygonRouter := createPolygonRouter()
-
-// Register chains with their respective routers
-processor.AddChain(ethereumChain, ethereumOpts, ethereumRouter)
-processor.AddChain(polygonChain, polygonOpts, polygonRouter)
-
-// Start concurrent indexing with graceful shutdown
-ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-defer cancel()
-
-if err := processor.Run(ctx); err != nil && err != context.Canceled {
-    log.Fatal(err)
-}
-
-func createEthereumRouter() *decoder.DecoderRouter {
-    erc20Decoder := decoder.NewStandardDecoder()
-    erc20Decoder.RegisterABI("ERC20", erc20ABI)
-
-    erc721Decoder := decoder.NewStandardDecoder()
-    erc721Decoder.RegisterABI("ERC721", erc721ABI)
-
-    return decoder.NewDecoderRouter().
-        Register(decoder.ByTopicCount(3), "ERC20", erc20Decoder).
-        Register(decoder.ByTopicCount(4), "ERC721", erc721Decoder)
+    processor.Run(ctx)
 }
 ```
 
@@ -223,344 +87,381 @@ func createEthereumRouter() *decoder.DecoderRouter {
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
-| `RangeSize` | `int` | Required | Blocks per fetch batch (100-1000 recommended based on event density) |
-| `FetcherConcurrency` | `int` | Required | Number of concurrent RPC fetch workers (match provider rate limits) |
-| `StartBlock` | `uint64` | 0 | Starting block height (0 = resume from stored cursor) |
-| `ConfirmationDepth` | `uint64` | Required | Blocks to wait before processing (12 for Ethereum, 100+ for faster chains) |
-| `EnableTimestamps` | `bool` | `false` | Include block timestamps in events (increases RPC overhead) |
-| `Topics` | `[][]string` | Required | Event signature hashes with OR logic support |
-| `Addresses` | `[]string` | Optional | Contract addresses to monitor (empty = all addresses) |
-| `FetchMode` | `FetchMode` | `FetchModeLogs` | `FetchModeLogs` (efficient) or `FetchModeReceipts` (comprehensive) |
-| `ReorgLookbackBlocks` | `uint64` | 64 | Maximum blocks to examine during reorg ancestor search |
-| `UseLogsForHistoricalSync` | `bool` | `true` | Prefer `eth_getLogs` for historical data fetching |
-| `RetryConfig` | `*RetryConfig` | Default | Exponential backoff configuration for transient failures |
+| `RangeSize` | `int` | Required | Blocks per batch (see tuning guide below) |
+| `FetcherConcurrency` | `int` | Required | Concurrent RPC workers (see tuning guide below) |
+| `StartBlock` | `uint64` | 0 | Starting block (0 = resume from cursor) |
+| `ConfirmationDepth` | `uint64` | Required | Blocks to wait before processing |
+| `EnableTimestamps` | `bool` | `false` | Include block timestamps (increases RPC calls) |
+| `Topics` | `[][]string` | Required | Event signature hashes to filter |
+| `Addresses` | `[]string` | Optional | Contract addresses to monitor |
+| `FetchMode` | `FetchMode` | `FetchModeLogs` | `FetchModeLogs` or `FetchModeReceipts` |
+| `ReorgLookbackBlocks` | `uint64` | 64 | Max blocks for reorg ancestor search |
+| `RetryConfig` | `*RetryConfig` | Default | Retry configuration |
 
 ### RPC Configuration
 
 ```go
-// NewHTTPRPC creates a rate-limited JSON-RPC client
 rpc := core.NewHTTPRPC(
-    "https://your-rpc-endpoint.com",  // RPC endpoint URL
-    20,                               // Requests per second
-    5,                                // Burst capacity
+    "https://your-rpc-endpoint.com",
+    20,  // Requests per second (match provider limits)
+    5,   // Burst capacity
 )
 ```
 
-### Logging Configuration
+### Retry Configuration
 
 ```go
-// Configure structured JSON logging
-logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
-    Level: slog.LevelInfo,  // Debug, Info, Warn, Error
-}))
-processor.SetLogger(logger)
-```
-
-## Architecture
-
-godex implements a high-performance producer-consumer pipeline with concurrent fetching, ordered processing, and fault-tolerant storage designed for production blockchain indexing.
-
-```
-┌─────────────────────────────────────────────────────────────────────────────────────┐
-│                               Processor Core                                        │
-│  ┌────────────┐  ┌────────────┐  ┌─────────────┐  ┌─────────────────────────────┐ │
-│  │  Fetchers  │──│   Arbiter  │──│ Decoder     │──│           Sink             │ │
-│  │ (Concurrent│  │ (Sequenced │  │ Router      │  │ (PostgreSQL, etc.)        │ │
-│  │   RPC)     │  │   Queue)   │  │ (Routing)   │  │                             │ │
-│  └────────────┘  └────────────┘  └─────────────┘  └─────────────────────────────┘ │
-└─────────────────────────────────────────────────────────────────────────────────────┘
-                                      │
-                                      ▼
-┌─────────────────────────────────────────────────────────────────────────────────────┐
-│                            Per-Chain Processing                                    │
-│  ┌────────────┐  ┌────────────┐  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐ │
-│  │ Chain 1    │  │ Chain 2    │  │ Chain N     │  │ Metrics     │  │ Logging     │ │
-│  │ State      │  │ State      │  │ State       │  │ Collection  │  │ & Health    │ │
-│  └────────────┘  └────────────┘  └─────────────┘  └─────────────┘  └─────────────┘ │
-└─────────────────────────────────────────────────────────────────────────────────────┘
-```
-
-### Core Components
-
-| Component | Responsibility | Implementation |
-|-----------|----------------|----------------|
-| **Processor** | Orchestrates multi-chain indexing lifecycle with error isolation | Concurrent per-chain processing with shared resources |
-| **Fetchers** | Concurrent RPC workers fetching logs and timestamps | Rate-limited batch requests with individual timeouts and retry logic |
-| **Arbiter** | Maintains block order and coordinates processing pipeline | LRU cache for reorg detection, bounded buffering with context cancellation |
-| **Decoder Router** | Intelligent event routing to appropriate decoders | Match-based routing with support for multiple contract types |
-| **Sink** | Persistent storage with atomic rollback support | Transactional writes with reorg recovery and cursor management |
-
-## Core Interfaces
-
-### Sink Interface
-
-Persistent storage abstraction with transactional rollback support.
-
-```go
-type Sink interface {
-    // Store persists a batch of events atomically
-    Store(ctx context.Context, events []types.Event) error
-
-    // Rollback removes events from specified block onwards during reorgs
-    Rollback(ctx context.Context, chainId string, toBlock uint64) error
-
-    // LoadCursor retrieves the last processed block for resumption
-    LoadCursor(ctx context.Context, chainId string) (blockNum uint64, blockHash string, err error)
+retryConfig := &core.RetryConfig{
+    MaxAttempts:       3,
+    InitialBackoff:    1 * time.Second,
+    MaxBackoff:        30 * time.Second,
+    Multiplier:        2.0,
+    EnableJitter:      true,
+    PerRequestTimeout: 10 * time.Second,
 }
 ```
 
-### Decoder Interface
+## Configuration Tuning Guide
 
-Event transformation with pluggable ABI support.
+### Finding the Right Balance
+
+#### FetcherConcurrency
+
+**Too Low:**
+- Underutilized RPC provider capacity
+- Slower indexing speed
+- Symptoms: Low blocks/second, RPC calls not hitting rate limits
+
+**Too High:**
+- Rate limit errors (429)
+- Provider throttling
+- Symptoms: Frequent retries, "rate limit exceeded" errors
+
+**Recommended:**
+- Start with provider's documented QPS limit
+- Monitor rate limit errors and adjust down if needed
+- Example: Alchemy (20-50), Infura (10-20), Public RPC (5-10)
+
+#### RangeSize
+
+**Too Small (< 100):**
+- High RPC overhead
+- Many small transactions
+- Symptoms: High RPC call count, slow progress
+
+**Too Large (> 2000):**
+- May exceed provider block range limits
+- May exceed RPC response size limits (5-10MB typical)
+- Higher memory usage
+- Larger rollback scope on reorgs
+- Symptoms: RPC errors ("response too large"), memory spikes
+
+**Recommended:**
+- **Historical sync**: 500-2000 blocks (faster catch-up, watch for response size limits)
+- **Live sync**: 100-500 blocks (lower latency)
+- **High event density**: 100-500 blocks (manage memory and response size)
+- **Low event density**: 500-1000 blocks (efficiency)
+- **If hitting response size limits**: Reduce to 50-200 blocks
+
+#### ConfirmationDepth
+
+**Too Low:**
+- Frequent reorgs detected
+- More rollback operations
+- Symptoms: High reorg count, frequent cursor updates
+
+**Too High:**
+- Delayed event availability
+- Slower indexing progress
+- Symptoms: Events appear late, slow block advancement
+
+**Recommended:**
+- **Ethereum**: 12 blocks (PoS finality)
+- **Polygon/Arbitrum**: 100+ blocks (faster finality)
+- **BSC**: 15 blocks
+- **Optimism**: 12 blocks
+
+#### FetchMode
+
+**FetchModeLogs:**
+- Most efficient for indexed events
+- Lower RPC cost
+- May miss uncle blocks
+- **Use for**: Most scenarios, historical sync
+
+**FetchModeReceipts:**
+- Comprehensive (includes all transactions)
+- Higher RPC overhead
+- More reliable for contract-specific indexing
+- **Use for**: Targeted contract monitoring, when completeness is critical
+
+### Performance Tuning Checklist
+
+1. **Monitor RPC rate limits**: Adjust `FetcherConcurrency` if hitting limits
+2. **Check block processing speed**: Increase `RangeSize` if too slow
+3. **Monitor reorg frequency**: Increase `ConfirmationDepth` if too many reorgs
+4. **Watch memory usage**: Decrease `RangeSize` if memory spikes
+5. **Review retry frequency**: Adjust `RetryConfig` if too many retries
+
+## Common Problems and Solutions
+
+### Problem: Rate Limit Errors (429)
+
+**Symptoms:**
+- Frequent "rate limit exceeded" errors
+- High retry count in logs
+- Slow indexing progress
+
+**Solutions:**
+1. **Reduce FetcherConcurrency**: Lower to 50-75% of provider limit
+2. **Increase burst capacity**: Set burst to 20-30% of rate limit
+3. **Check provider limits**: Verify you're not exceeding plan limits
+4. **Use multiple RPC endpoints**: Distribute load across providers
 
 ```go
-type Decoder interface {
-    // Decode transforms a single log into a structured event
-    // name: ABI identifier, chainId: blockchain network identifier
-    Decode(name string, chainId string, log types.Log) (*types.Event, error)
-
-    // DecodeBatch processes multiple logs efficiently (optional optimization)
-    DecodeBatch(logs []types.Log) (*[]types.Event, error)
-}
+// Example: Reduce concurrency
+opts.FetcherConcurrency = 10  // Down from 20
 ```
 
-### DecoderRouter Interface
+### Problem: RPC Response Too Large
 
-Intelligent routing of logs to appropriate decoders based on configurable conditions.
+**Symptoms:**
+- RPC errors about response size limits
+- "response too large" or "result exceeds limit" errors
+- Fetches failing for large block ranges
+- Errors when processing blocks with many events
+
+**Automatic Handling:**
+The SDK automatically handles "response too big" errors (typically error code `-32008`) by recursively splitting the block range into smaller chunks until the response size is acceptable. This happens transparently during normal operation - you'll see log messages like "too big response occur, split request" when this occurs.
+
+**Important:** If a single block returns a "response too big" error, this indicates a fundamental problem with the RPC endpoint itself, not the request. In such cases:
+- **Switch to a different RPC provider** with higher response size limits
+- **Reduce the number of events** being indexed (narrow `Topics` or `Addresses` filters)
+- **Use a dedicated RPC node** with custom limits
+
+**Manual Solutions:**
+1. **Reduce RangeSize**: Smaller block ranges produce smaller responses (prevents splitting overhead)
+2. **Use RPC provider with larger limits**: Some providers support bigger responses
+3. **Filter more aggressively**: Use address filters to reduce event count
+4. **Switch to FetchModeReceipts**: May have different size limits (though less efficient)
 
 ```go
-type DecoderRouter struct {
-    routes []DecoderRoute
-}
+// Example: Reduce range size to avoid automatic splitting
+opts.RangeSize = 100  // Down from 1000 to avoid large responses
 
-// Create new router instance
-func NewDecoderRouter() *DecoderRouter
-
-// Register decoder with match condition
-func (r *DecoderRouter) Register(match MatchFunc, abiName string, dec Decoder) *DecoderRouter
-
-// Implements Decoder interface with intelligent routing
-func (r *DecoderRouter) Decode(chainId string, log types.Log) (*types.Event, error)
+// Or use provider with larger limits
+rpc := core.NewHTTPRPC("https://provider-with-larger-limits.com", 20, 5)
 ```
 
-### Match Functions
+**Provider Response Size Limits:**
+- **Alchemy**: ~10MB response limit
+- **Infura**: ~5MB response limit
+- **Public RPC**: Varies, often lower
+- **Self-hosted**: Configurable (check node settings)
 
-Configurable conditions for routing logs to decoders.
+**When to Reduce RangeSize:**
+- High event density blocks (many events per block)
+- Large event data (complex events with large data fields)
+- Multiple contracts emitting events in same range
+
+### Problem: Slow Indexing Speed
+
+**Symptoms:**
+- Low blocks/second rate
+- Indexer falling behind chain head
+- High block lag
+
+**Solutions:**
+1. **Increase FetcherConcurrency**: Up to provider's rate limit
+2. **Increase RangeSize**: Larger batches reduce overhead
+3. **Use FetchModeLogs**: More efficient than receipts
+4. **Enable UseLogsForHistoricalSync**: Faster historical catch-up
+5. **Check RPC latency**: Switch to faster/closer RPC endpoint
 
 ```go
-type MatchFunc func(log types.Log) bool
-
-// Topic count matching
-func ByTopicCount(count int) MatchFunc
-
-// Address-based matching
-func ByAddress(address string) MatchFunc
-func ByAddresses(addresses []string) MatchFunc
-
-// Event signature matching
-func ByTopic0(topic0 string) MatchFunc
-
-// Logical combinations
-func And(matchers ...MatchFunc) MatchFunc
-func Or(matchers ...MatchFunc) MatchFunc
+// Example: Optimize for speed
+opts.FetcherConcurrency = 20  // Increase workers
+opts.RangeSize = 2000         // Larger batches
+opts.FetchMode = core.FetchModeLogs
+opts.UseLogsForHistoricalSync = true
 ```
 
-### RPC Interface
+### Problem: High Memory Usage
 
-Blockchain node communication with batching and rate limiting.
+**Symptoms:**
+- Memory growing over time
+- OOM errors
+- System slowdown
+
+**Solutions:**
+1. **Reduce RangeSize**: Smaller batches use less memory
+2. **Reduce FetcherConcurrency**: Fewer concurrent operations
+3. **Check ReorgLookbackBlocks**: Lower if too high (default 64 is usually fine)
+4. **Monitor channel buffering**: Ensure backpressure is working
 
 ```go
-type RPC interface {
-    // Head retrieves the latest block number
-    Head(ctx context.Context) (string, error)
-
-    // GetBlock fetches a single block header
-    GetBlock(ctx context.Context, blockNumber string) (types.Block, error)
-
-    // GetBlocks fetches multiple blocks in a single batch request
-    GetBlocks(ctx context.Context, blockNumbers []string) (map[string]types.Block, error)
-
-    // GetLogs retrieves logs matching filter criteria
-    GetLogs(ctx context.Context, filter types.Filter) ([]types.Log, error)
-
-    // GetBlockReceipts fetches transaction receipts for a block
-    GetBlockReceipts(ctx context.Context, blockNumber string) ([]types.Receipt, error)
-}
+// Example: Reduce memory usage
+opts.RangeSize = 500          // Smaller batches
+opts.FetcherConcurrency = 4  // Fewer workers
+opts.ReorgLookbackBlocks = 64 // Keep default
 ```
 
-## Reorganization Handling
+### Problem: Frequent Reorganizations
 
-Blockchain reorganizations are automatically detected and resolved with minimal data loss and efficient recovery.
+**Symptoms:**
+- High reorg count in metrics
+- Frequent rollback operations
+- Cursor frequently updated backward
 
-**Detection Mechanism:**
-1. Maintains LRU cache of processed block hashes (`BlockHashCache`)
-2. Verifies parent hash continuity during sequential window processing
-3. Detects divergence when `block.ParentHash != cachedHash[block.Number-1]`
+**Solutions:**
+1. **Increase ConfirmationDepth**: Wait more blocks before processing
+2. **Monitor chain stability**: Some chains have more reorgs
+3. **Check ReorgLookbackBlocks**: Ensure sufficient lookback range
 
-**Recovery Process:**
-1. **Ancestor Search**: Binary search backward through cached hashes to find common ancestor
-2. **Sink Rollback**: Call `sink.Rollback(chainId, ancestor)` to remove orphaned events atomically
-3. **State Reset**: Update cursor to ancestor block and clear future hash cache entries
-4. **Resume Processing**: Restart from ancestor + 1 with fresh batch processing
-
-**Performance Characteristics:**
-- O(1) hash lookups via LRU cache
-- Bounded memory usage with configurable cache size
-- Minimal RPC overhead (only fetches headers during reorg detection)
-
-**Configuration Options:**
-- `ReorgLookbackBlocks`: Maximum blocks to examine (default: 64, balances detection range vs memory)
-- `ConfirmationDepth`: Blocks to wait before processing (higher = fewer reorgs but increased latency)
-
-**Monitoring Reorgs:**
 ```go
-// Metrics collection includes reorg tracking
-metrics.IncReorgs(chainId)  // Track reorg frequency
-// Use metrics to adjust ConfirmationDepth based on chain behavior
+// Example: Reduce reorgs
+opts.ConfirmationDepth = 20   // Up from 12 for Ethereum
+// For faster chains:
+opts.ConfirmationDepth = 200  // Polygon/Arbitrum
 ```
 
-## Observability & Metrics
+### Problem: Context Canceled Errors
 
-Optional metrics collection for monitoring indexer performance and health.
+**Symptoms:**
+- "context canceled" errors in logs
+- Indexer stops unexpectedly
+- Premature shutdown
+
+**Solutions:**
+1. **Check timeout settings**: Ensure sufficient `PerRequestTimeout`
+2. **Verify context propagation**: Don't cancel parent context prematurely
+3. **Check graceful shutdown**: Use signal-based cancellation properly
 
 ```go
-type Metrics interface {
-    // Block processing metrics
-    IncBlocksProcessed(chainId string, count uint64)
-    ObservedBlockLag(chainId string, blocks uint64)
-    ObservedBlockFetchDuration(chainId string, duration time.Duration, success bool)
-
-    // Storage metrics
-    IncSinkWrites(chainId string, count uint64)
-    IncSinkErrors(chainId string)
-    ObservedSinkWriteDuration(chainId string, duration time.Duration, success bool)
-
-    // Indexer state
-    SetIndexedHeight(chainId string, height uint64)
-    SetProcessorConcurrency(chainId string, workers uint64)
-    IncReorgs(chainId string)
-}
+// Example: Increase timeouts
+retryConfig.PerRequestTimeout = 30 * time.Second  // Up from 10s
 ```
 
-**Implementation:** A Prometheus adapter is available at `adapters/metrics/prometheus.go`.
+### Problem: Sink Write Errors
 
-## Adapters
+**Symptoms:**
+- Database connection errors
+- Transaction failures
+- Events not persisting
 
-### PostgreSQL Sink
-
-Production-ready event storage with transactional rollback support.
+**Solutions:**
+1. **Check database connection**: Verify connection string and pool size
+2. **Monitor connection pool**: Ensure sufficient connections
+3. **Check transaction size**: Reduce batch size if transactions too large
+4. **Verify schema**: Ensure tables exist and migrations applied
 
 ```go
-import "github.com/ryuux05/godex/adapters/sink/postgres"
+// Example: Optimize sink
+sink, _ := postgres.NewSink(postgres.SinkConfig{
+    Pool:          pool,
+    Handler:       handler,
+    CopyThreshold: 32,  // Use COPY for large batches
+})
+```
 
-sink, err := postgres.NewPostgresSink(ctx, "postgres://user:pass@host:5432/db")
+### Problem: Decoder Not Matching Logs
+
+**Symptoms:**
+- Events not decoded
+- Warnings about failed decoding
+- Zero events stored
+
+**Solutions:**
+1. **Verify ABI registration**: Ensure ABI includes all event definitions
+2. **Check matcher logic**: Verify router matchers match your logs
+3. **Verify topic filters**: Ensure Topics configuration matches events
+4. **Check address filters**: Verify Addresses includes target contracts
+
+```go
+// Example: Debug decoder
+router := decoder.NewDecoderRouter()
+router.Register(
+    decoder.ByAddress("0xYourContract"),  // Verify address
+    "YourABI",
+    decoder,
+)
+```
+
+### Problem: Indexer Not Resuming from Cursor
+
+**Symptoms:**
+- Starts from StartBlock instead of cursor
+- Duplicate events
+- Lost progress
+
+**Solutions:**
+1. **Verify cursor exists**: Check `chronicle_cursors` table
+2. **Check LoadCursor implementation**: Ensure sink loads cursor correctly
+3. **Set StartBlock to 0**: Let processor use cursor when available
+
+```go
+// Example: Proper cursor usage
+opts.StartBlock = 0  // Use cursor if available
+```
+
+## Monitoring and Health
+
+### Status and Health Checks
+
+```go
+// Get chain status
+status, err := processor.Status("1")
 if err != nil {
     log.Fatal(err)
 }
+fmt.Printf("Block: %d/%d (%.1f%%) - %.0f blk/s\n",
+    status.CurrentBlock, status.HeadBlock,
+    status.ProgressPct, status.BlocksPerSec)
+
+// Health check
+health, err := processor.Health(ctx)
+if err != nil {
+    log.Fatal(err)
+}
+if !health.Healthy {
+    log.Printf("Unhealthy: %v", health.Errors)
+}
 ```
 
-### Prometheus Metrics
+### Metrics
 
-Standard observability integration for monitoring and alerting.
+Enable Prometheus metrics for monitoring:
 
 ```go
 import "github.com/ryuux05/godex/adapters/metrics"
 
 metrics := metrics.NewPrometheusMetrics()
 processor := core.NewProcessor(metrics, sink)
+
+// Expose metrics endpoint
+http.Handle("/metrics", promhttp.Handler())
 ```
 
-## Performance Optimization
+**Key Metrics to Monitor:**
+- `godex_blocks_processed_total` - Indexing progress
+- `godex_block_lag` - How far behind chain head
+- `godex_block_fetched_duration_seconds` - RPC performance
+- `godex_sink_events_writes_total` - Storage throughput
+- `godex_sink_events_errors_total` - Storage failures
+- `godex_reorgs_total` - Reorg frequency
 
-### Configuration Tuning
+## Examples
 
-| Parameter | Impact | Recommendation |
-|-----------|--------|----------------|
-| `FetcherConcurrency` | Throughput vs rate limits | Match provider QPS limits (e.g., 20-50 for Alchemy) |
-| `RangeSize` | Batch efficiency vs memory | 100-1000 blocks based on event density and reorg tolerance |
-| `ConfirmationDepth` | Safety vs latency | 12 for Ethereum, 100+ for Polygon/Arbitrum |
-| `FetchMode` | Performance vs reliability | `FetchModeLogs` for efficiency, `FetchModeReceipts` for completeness |
-| `ReorgLookbackBlocks` | Detection range vs memory | 64-256 based on expected reorg depth |
+- [ERC20 Indexer](examples/erc20-indexer/) - Complete example with PostgreSQL storage
+- See [examples/](examples/) directory for more examples
 
-### Fetch Modes
+## Documentation
 
-- **`FetchModeLogs`**: Uses `eth_getLogs` - most efficient for indexed events, may miss uncle blocks
-- **`FetchModeReceipts`**: Uses `eth_getBlockReceipts` - comprehensive but higher RPC overhead
-- **`UseLogsForHistoricalSync`**: Prefer `eth_getLogs` for initial historical sync to reduce costs
-
-### RPC Optimization
-
-- **Batch Requests**: Automatic batching for timestamp fetching reduces RPC calls by up to 90%
-- **Rate Limiting**: Configurable QPS and burst limits prevent provider throttling
-- **Exponential Backoff**: Jittered backoff prevents thundering herd on transient failures
-- **Individual Timeouts**: Per-request timeouts prevent indefinite blocking (30s default)
-- **Retry Logic**: Configurable retry attempts with smart failure classification
-
-### Memory Management
-
-- **Bounded Caching**: LRU block hash cache prevents unbounded memory growth
-- **Window Processing**: Natural backpressure limits concurrent memory usage
-- **Channel Buffering**: Sized channels provide backpressure without excessive queuing
-- **Resource Cleanup**: Context cancellation ensures prompt resource release
-
-### Monitoring & Observability
-
-```go
-// Key metrics for performance monitoring
-processor := core.NewProcessor(prometheusMetrics, sink)
-
-// Monitor these metrics:
-// - Blocks processed per second
-// - RPC request latency and success rates
-// - Reorg frequency and recovery time
-// - Memory usage and cache hit rates
-// - Per-chain indexing progress
-```
-
-## Error Handling & Resilience
-
-The SDK implements comprehensive error classification and handling for production reliability:
-
-### Error Classification
-
-- **Transient Errors**: Network timeouts, RPC rate limits - automatic retry with exponential backoff
-- **Permanent Errors**: Invalid configuration, authentication failures - immediate chain termination
-- **Reorg Errors**: Blockchain reorganizations - graceful rollback and recovery from ancestor
-- **Non-Recoverable Errors**: Corrupted data, schema mismatches - chain isolation and logging
-
-### Failure Isolation
-
-- **Chain Independence**: Individual chain failures do not affect concurrent chain processing
-- **Resource Cleanup**: Context cancellation ensures prompt cleanup of goroutines and connections
-- **Graceful Degradation**: Failed chains log errors while others continue processing
-- **Atomic Operations**: Sink operations use transactions with automatic rollback on failures
-
-### Retry Configuration
-
-```go
-retryConfig := &core.RetryConfig{
-    MaxAttempts:       3,                // Total attempts (including initial)
-    InitialBackoff:    1 * time.Second,  // Starting delay
-    MaxBackoff:        30 * time.Second, // Maximum delay
-    Multiplier:        2.0,              // Exponential growth
-    EnableJitter:      true,             // Randomize delays to prevent thundering herd
-    PerRequestTimeout: 10 * time.Second, // Individual request timeout
-}
-```
-
-### Monitoring Errors
-
-```go
-// Structured error logging
-logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
-    Level: slog.LevelInfo,
-}))
-
-// Errors are categorized and logged with context:
-// - Chain ID, error type, retry attempts
-// - RPC endpoint, request details
-// - Processing state and recovery actions
-```
+- [Architecture Overview](docs/indexer_architecture.md) - System architecture and design principles
+- [Processor Guide](docs/processor.md) - Processor configuration and behavior
+- [Decoder Guide](docs/decoder.md) - Event decoding and routing
+- [RPC Guide](docs/rpc.md) - RPC client configuration and optimization
+- [Sink Guide](docs/sink.md) - Storage backends and persistence
 
 ## License
 
