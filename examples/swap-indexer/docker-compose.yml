@@ -16,7 +16,7 @@ services:
       test: ["CMD-SHELL", "pg_isready -U godex"]
       interval: 5s
       timeout: 5s
-      retries: 5
+      retries: 5 
   indexer:
     build:
       context: ../..  # Build from repo root
