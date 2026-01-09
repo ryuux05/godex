@@ -3,7 +3,7 @@ name: Release
 on:
   push:
     tags:
-      - 'v0.1.0'
+      - 'v*'  # Trigger on any version tag
 
 permissions:
   contents: write
@@ -20,28 +20,18 @@ jobs:
     - name: Set up Go
       uses: actions/setup-go@v4
       with:
-        go-version: 1.24.x
+        go-version-file: go.mod
 
     - name: Run tests
       run: go test -race ./...
 
-    - name: Create release archives
-      run: |
-        # Create cross-platform binaries
-        mkdir -p dist
-        
-        # Linux AMD64
-        GOOS=linux GOARCH=amd64 go build -o dist/godex-linux-amd64 ./cmd
-        
-        # macOS AMD64  
-        GOOS=darwin GOARCH=amd64 go build -o dist/godex-darwin-amd64 ./cmd
-        
-        # Windows AMD64
-        GOOS=windows GOARCH=amd64 go build -o dist/godex-windows-amd64.exe ./cmd
-
     - name: Create GitHub release
       uses: softprops/action-gh-release@v1
       with:
-        files: |
-          dist/godex-*
+        tag_name: ${{ github.ref_name }}
         generate_release_notes: true
+        body: |
+          ## Installation
+          
+          go get github.com/ryuux05/godex@${{ github.ref_name }}
+                    See [CHANGELOG.md](https://github.com/ryuux05/godex/blob/${{ github.ref_name }}/CHANGELOG.md) for full release notes.
