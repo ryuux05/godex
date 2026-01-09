@@ -67,6 +67,9 @@ const (
 	FetchModeReceipts FetchMode = processor.FetchModeReceipts
 )
 
+// NewProcessor creates a new blockchain indexing processor with the provided
+// metrics collector and event sink. The processor orchestrates concurrent
+// fetching, decoding, and persistence of blockchain events across multiple chains.
 func NewProcessor(m Metrics, s Sink) *Processor {
 	return processor.NewProcessor(m, s)
 }
@@ -79,10 +82,15 @@ type RPC = rpc.RPC
 type HTTPRPC = rpc.HTTPRPC
 type RetryConfig = rpc.RetryConfig
 
+// NewHTTPRPC creates a new rate-limited HTTP RPC client for blockchain interactions.
+// The client automatically handles request retries, exponential backoff, and
+// context cancellation. Rate limiting prevents overwhelming RPC endpoints.
 func NewHTTPRPC(endpoint string, rateLimit uint16, burstLimit uint16) *HTTPRPC {
 	return rpc.NewHTTPRPC(endpoint, rateLimit, burstLimit)
 }
 
+// DefaultRetryConfig returns the default retry configuration with sensible
+// defaults for RPC request retries, including exponential backoff and jitter.
 func DefaultRetryConfig() RetryConfig {
 	return rpc.DefaultRetryConfig()
 }
@@ -120,10 +128,16 @@ type ReorgError = coreerrors.ReorgError
 var ErrCursorNotFound = coreerrors.ErrCursorNotFound
 var ErrReorgDetected = coreerrors.ErrReorgDetected
 
+// IsRetryableError determines if an error should trigger a retry attempt.
+// Returns true for transient errors like network timeouts, rate limits, or
+// temporary RPC unavailability that may succeed on retry.
 func IsRetryableError(err error) bool {
 	return coreerrors.IsRetryableError(err)
 }
 
+// IsResponseTooBigError checks if an error indicates an RPC response exceeded
+// the provider's size limits. This typically triggers automatic range splitting
+// in the fetcher to reduce individual request sizes.
 func IsResponseTooBigError(err error) bool {
 	return coreerrors.IsResponseTooBigError(err)
 }

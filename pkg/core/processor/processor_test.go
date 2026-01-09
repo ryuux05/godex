@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -1059,10 +1060,10 @@ func TestMultiChainRun_Success(t *testing.T) {
 
 func TestMultiChain_IndependentErrors(t *testing.T) {
 	// Ethereum server - always fails
-	ethCallCount := 0
+	var ethCallCount, polyCallCount int64
 	ethSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		ethCallCount++
+		atomic.AddInt64(&ethCallCount, 1)
 
 		// Always return error for Ethereum
 		_ = json.NewEncoder(w).Encode(map[string]any{
@@ -1077,10 +1078,9 @@ func TestMultiChain_IndependentErrors(t *testing.T) {
 	defer ethSrv.Close()
 
 	// Polygon server - works fine
-	polyCallCount := 0
 	polySrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		polyCallCount++
+		atomic.AddInt64(&polyCallCount, 1)
 
 		var req struct {
 			Method string        `json:"method"`
@@ -1199,14 +1199,16 @@ func TestMultiChain_IndependentErrors(t *testing.T) {
 	// Collect events from sink
 	polyEventCount := mockSink.GetEventCount()
 
+	finalEthCount := atomic.LoadInt64(&ethCallCount)
+    finalPolyCount := atomic.LoadInt64(&polyCallCount)
 	// Assertions
 	t.Logf("Run error: %v", runErr)
-	t.Logf("Ethereum calls: %d", ethCallCount)
-	t.Logf("Polygon calls: %d", polyCallCount)
+	t.Logf("Ethereum calls: %d", finalEthCount)
+	t.Logf("Polygon calls: %d", finalPolyCount)
 	t.Logf("Polygon events stored: %d", polyEventCount)
 
-	assert.Greater(t, ethCallCount, 0, "Ethereum should have attempted calls")
-	assert.Greater(t, polyCallCount, 0, "Polygon should have made calls")
+	assert.Greater(t, int(finalEthCount), 0, "Ethereum should have attempted calls")
+	assert.Greater(t, int(finalPolyCount), 0, "Polygon should have made calls")
 	assert.Error(t, runErr, "Should get error from Ethereum chain")
 }
 
@@ -2043,4 +2045,3 @@ func TestRun_WithEnableTimestamps(t *testing.T) {
 	assert.Equal(t, uint64(1700000000), event1.Timestamp) // 0x65f5a000
 	assert.Equal(t, uint64(1700000012), event2.Timestamp) // 0x65f5a00c
 }
-	
