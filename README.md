@@ -461,6 +461,7 @@ http.Handle("/metrics", promhttp.Handler())
 - [Processor Guide](docs/processor.md) - Processor configuration and behavior
 - [Decoder Guide](docs/decoder.md) - Event decoding and routing
 - [RPC Guide](docs/rpc.md) - RPC client configuration and optimization
+- [CLI Guide](docs/cli.md) - Command-line interface usage (init, gen type)
 - [Sink Guide](docs/sink.md) - Storage backends and persistence
 
 ## License
