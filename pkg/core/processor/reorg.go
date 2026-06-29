@@ -2,6 +2,7 @@ package processor
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 
 	coreerrors "github.com/ryuux05/godex/pkg/core/errors"
@@ -23,9 +24,9 @@ func (p *Processor) detectReorg(ctx context.Context, chain *chainState, currentB
 
 		ancestor, hash := p.handleReorg(ctx, chain)
 
-		// Perform db rollback 
+		// Perform db rollback
 		if err := p.sink.Rollback(ctx, chain.chainInfo.ChainId, ancestor, hash); err != nil {
-			p.logger.Error("failed to rollback sink", slog.String("chain_id", chain.chainInfo.ChainId), slog.Any("error", err))
+			return fmt.Errorf("rollback failed after reorg at block %d: %w", ancestor, err)
 		}
 
 		// Update the chain cursor to ancestor
@@ -33,7 +34,7 @@ func (p *Processor) detectReorg(ctx context.Context, chain *chainState, currentB
 		chain.cursor.BlockNum = ancestor
 
 		return &coreerrors.ReorgError{
-			BlockNum: currentBlockNum,
+			BlockNum:  currentBlockNum,
 			BlockHash: block.Hash,
 		}
 	}
@@ -72,10 +73,6 @@ func (p *Processor) handleReorg(ctx context.Context, chain *chainState) (uint64,
 			return nil
 		})
 
-		// Never return empty hash if we have a cursor hash
-		if h == "" {
-			h = chain.cursor.BlockHash
-		}
 		return fb, h
 	}
 

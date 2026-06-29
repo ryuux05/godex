@@ -318,11 +318,8 @@ func (p *Processor) matchesTopicFilter(log types.Log, chain *chainState) bool {
 		}
 
 		for _, topic0 := range filterTopics {
-			if len(log.Topics) > 0 {
-				logTopic := log.Topics[0]
-				if logTopic == topic0 {
-					return true
-				}
+			if log.Topics[i] == topic0 {
+				return true
 			}
 		}
 	}
