@@ -59,7 +59,9 @@ func (p *chainProgress) Update(block uint64, events uint64, time time.Time) {
 }
 
 func (p *chainProgress) SetHead(head uint64) {
-    p.headBlock = head
+	p.mu.Lock()
+	p.headBlock = head
+	p.mu.Unlock()
 }
 
 func (p *chainProgress) Snapshot() snapshot {
@@ -103,9 +105,9 @@ func (p *chainProgress) Snapshot() snapshot {
 
 	// Progress %
 	var progressPct float64
-	 if p.headBlock > p.syncStartBlock {
-        progressPct = float64(p.currentSyncBlock) / float64(p.headBlock) * 100
-    }
+	if head > p.syncStartBlock {
+		progressPct = float64(cur) / float64(head) * 100
+	}
 
 	// ETA
 	var blocksBehind uint64

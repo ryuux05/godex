@@ -34,11 +34,11 @@ type RetryConfig struct {
 
 func DefaultRetryConfig() RetryConfig {
 	return RetryConfig{
-		MaxAttempts:    3,
-		InitialBackoff: 1 * time.Second,
-		MaxBackoff:     30 * time.Second,
-		Multiplier:     2.0,
-		EnableJitter:   true,
+		MaxAttempts:       3,
+		InitialBackoff:    1 * time.Second,
+		MaxBackoff:        30 * time.Second,
+		Multiplier:        2.0,
+		EnableJitter:      true,
 		PerRequestTimeout: 10 * time.Second,
 	}
 }
@@ -59,6 +59,9 @@ func RetryWithBackoff(ctx context.Context, config RetryConfig, fn func() error) 
 	backoff := config.InitialBackoff
 
 	for attempt := 0; attempt < config.MaxAttempts; attempt++ {
+		if err := ctx.Err(); err != nil {
+			return fmt.Errorf("retry cancelled: %w", err)
+		}
 		// Execute function
 		lastErr = fn()
 
@@ -82,7 +85,7 @@ func RetryWithBackoff(ctx context.Context, config RetryConfig, fn func() error) 
 
 		// Calculate wait time with exponential backoff and jitter
 		wait := backoff
-		if config.EnableJitter {
+		if config.EnableJitter && backoff/4 > 0 {
 			jitter := time.Duration(rand.Int63n(int64(backoff / 4)))
 			wait = backoff + jitter
 		}

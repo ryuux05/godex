@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/ryuux05/godex/pkg/core/errors"
@@ -13,22 +14,23 @@ import (
 	"golang.org/x/sync/errgroup"
 )
 
-func (p *Processor) fetchAll(ctx context.Context, chain *chainState, jobs <-chan BlockRange) (<-chan FetchResult, <-chan struct{}, error) {
+func (p *Processor) fetchAll(ctx context.Context, chain *chainState, jobs <-chan BlockRange) (<-chan FetchResult, <-chan error, error) {
 	results := make(chan FetchResult, chain.opts.FetcherConcurrency)
-	done := make(chan struct{})
-	g := new(errgroup.Group)
+	done := make(chan error, 1)
+	g, workerCtx := errgroup.WithContext(ctx)
 	for i := 0; i < chain.opts.FetcherConcurrency; i++ {
 		g.Go(func() error {
 			// Each fetcher gets its own context with timeout
-			fetcherCtx, cancel := context.WithCancel(ctx)
+			fetcherCtx, cancel := context.WithCancel(workerCtx)
 			defer cancel()
 			return p.fetchWorker(fetcherCtx, chain, jobs, results)
 		})
 	}
 	go func() {
 		// wait for all fetcher to exit
-		g.Wait()
+		err := g.Wait()
 		close(results)
+		done <- err
 		// wait for the done signal
 		// signaling that the fetcher is done
 		close(done)
@@ -38,7 +40,17 @@ func (p *Processor) fetchAll(ctx context.Context, chain *chainState, jobs <-chan
 }
 
 func (p *Processor) fetchWorker(ctx context.Context, chain *chainState, jobs <-chan BlockRange, results chan<- FetchResult) error {
-	for job := range jobs {
+	for {
+		var job BlockRange
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case next, ok := <-jobs:
+			if !ok {
+				return nil
+			}
+			job = next
+		}
 		// Check for context cancellation before starting fetch
 		select {
 		case <-ctx.Done():
@@ -56,7 +68,6 @@ func (p *Processor) fetchWorker(ctx context.Context, chain *chainState, jobs <-c
 		case results <- result:
 		}
 	}
-	return nil
 }
 
 func (p *Processor) fetch(ctx context.Context, chain *chainState, job BlockRange) (FetchResult, error) {
@@ -75,7 +86,7 @@ func (p *Processor) fetch(ctx context.Context, chain *chainState, job BlockRange
 	err = rpc.RetryWithBackoff(ctx, *chain.opts.RetryConfig, func() error {
 		mode := chain.opts.FetchMode
 
-		if !chain.isLive && chain.opts.UseLogsForHistoricalSync {
+		if !chain.isLive.Load() && chain.opts.UseLogsForHistoricalSync {
 			mode = FetchModeLogs
 		}
 
@@ -305,8 +316,11 @@ func (p *Processor) matchesTopicFilter(log types.Log, chain *chainState) bool {
 		return false
 	}
 
-	// Match first topic (event signature)
+	// Topic positions are ANDed; alternatives within a position are ORed.
 	for i, filterTopics := range chain.topics {
+		if i >= len(log.Topics) {
+			return false
+		}
 		// Empty filter at this position means "match any"
 		if len(filterTopics) == 0 {
 			continue
@@ -317,12 +331,17 @@ func (p *Processor) matchesTopicFilter(log types.Log, chain *chainState) bool {
 			return false
 		}
 
-		for _, topic0 := range filterTopics {
-			if log.Topics[i] == topic0 {
-				return true
+		matched := false
+		for _, topic := range filterTopics {
+			if strings.EqualFold(log.Topics[i], topic) {
+				matched = true
+				break
 			}
+		}
+		if !matched {
+			return false
 		}
 	}
 
-	return false
+	return true
 }

@@ -172,8 +172,10 @@ func (p *Processor) processWindow(ctx context.Context, chain *chainState, result
 	chain.blockHashCache.Set(to, endBlock.Hash)
 
 	// update the in-memory cursor
+	p.mu.Lock()
 	chain.cursor.BlockNum = to
 	chain.cursor.BlockHash = endBlock.Hash
+	p.mu.Unlock()
 
 	// metrics
 	blocksProcessed := to - from + 1
@@ -205,7 +207,7 @@ func (p *Processor) decodeLogs(ctx context.Context, chain *chainState, fetchResu
 			slog.String("topic0", topic0))
 
 		// Decode
-		event, err := p.router.Decode(chain.chainInfo.ChainId, l)
+		event, err := chain.router.Decode(chain.chainInfo.ChainId, l)
 		if err != nil {
 			p.logger.Warn("failed to decode log", slog.String("chain_id", chain.chainInfo.ChainId), slog.Any("error", err))
 			continue
@@ -229,4 +231,3 @@ func (p *Processor) decodeLogs(ctx context.Context, chain *chainState, fetchResu
 
 	return events
 }
-

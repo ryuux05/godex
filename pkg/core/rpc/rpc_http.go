@@ -5,14 +5,14 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"net/http"
-	"time"
-	"golang.org/x/time/rate"
 	"github.com/ryuux05/godex/pkg/core/errors"
 	"github.com/ryuux05/godex/pkg/core/types"
+	"golang.org/x/time/rate"
+	"net/http"
+	"time"
 )
 
-type HTTPRPC struct{
+type HTTPRPC struct {
 	// base HTTP URl
 	endpoint string
 	// requests-per-second
@@ -27,17 +27,16 @@ type HTTPRPC struct{
 
 // Response type for rpc
 type rpcResponse[T any] struct {
-	JSONRPC string `json:"jsonrpc"`
-	ID uint `json:"id"`
-	Result T `json:"result"`
-	Error *errors.RPCError `json:"error"`
+	JSONRPC string           `json:"jsonrpc"`
+	ID      uint             `json:"id"`
+	Result  T                `json:"result"`
+	Error   *errors.RPCError `json:"error"`
 }
 
 // allowed result type constrain
 type RPCResult interface {
-    string | types.Block | []types.Log | []types.Receipt
+	string | types.Block | []types.Log | []types.Receipt
 }
-
 
 // NewHTTPRPC creates an HTTP JSON-RPC client.
 // endpoint is the base RPC URL (e.g., https://...).
@@ -48,15 +47,15 @@ func NewHTTPRPC(endpoint string, rateLimit uint16, burstLimit uint16) *HTTPRPC {
 		lim = rate.NewLimiter(rate.Limit(rateLimit), int(burstLimit))
 	}
 	return &HTTPRPC{
-		endpoint: endpoint,
-		rateLimit: rateLimit,
+		endpoint:   endpoint,
+		rateLimit:  rateLimit,
 		burstLimit: burstLimit,
-		client: &http.Client{Timeout: 10 * time.Second},
-		limiter: lim,
+		client:     &http.Client{Timeout: 10 * time.Second},
+		limiter:    lim,
 	}
 }
 
-func call[T RPCResult](ctx context.Context, r *HTTPRPC, method string, params[]interface{}) (T, error) {
+func call[T RPCResult](ctx context.Context, r *HTTPRPC, method string, params []interface{}) (T, error) {
 	var zero T
 
 	if r.limiter != nil {
@@ -102,10 +101,7 @@ func call[T RPCResult](ctx context.Context, r *HTTPRPC, method string, params[]i
 	}
 
 	if resp.Error != nil {
-		return zero, &errors.RPCError{
-			Code:    resp.Error.Code,
-			Message: resp.Error.Message,
-		}
+		return zero, resp.Error
 	}
 
 	return resp.Result, nil
@@ -186,13 +182,25 @@ func (r *HTTPRPC) GetBlocks(ctx context.Context, blockNumbers []string) (map[str
 	}
 
 	blocks := make(map[string]types.Block, len(blockNumbers))
+	seen := make([]bool, len(blockNumbers))
 	for _, res := range responses {
-		if res.Error != nil {
-			continue
+		if res.ID >= uint(len(blockNumbers)) {
+			return nil, fmt.Errorf("batch eth_getBlockByNumber returned invalid id %d", res.ID)
 		}
 		idx := int(res.ID)
-		if idx >= 0 && idx < len(blockNumbers) {
-			blocks[blockNumbers[idx]] = res.Result
+		if res.Error != nil {
+			return nil, fmt.Errorf("batch eth_getBlockByNumber failed for block %s: %w", blockNumbers[idx], res.Error)
+		}
+		if seen[idx] {
+			return nil, fmt.Errorf("batch eth_getBlockByNumber returned duplicate id %d", res.ID)
+		}
+		seen[idx] = true
+		blocks[blockNumbers[idx]] = res.Result
+	}
+
+	for idx, ok := range seen {
+		if !ok {
+			return nil, fmt.Errorf("batch eth_getBlockByNumber missing response for block %s", blockNumbers[idx])
 		}
 	}
 

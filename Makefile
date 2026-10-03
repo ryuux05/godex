@@ -26,6 +26,15 @@ test:
 	@echo "Running tests..."
 	@go test -v $(PKG)
 
+# CI uses an explicit POSTGRES_TEST_DSN so database tests cannot silently skip.
+.PHONY: test-race test-postgres
+test-race:
+	@go test -race -coverprofile=coverage.out -covermode=atomic $(PKG)
+
+test-postgres:
+	@test -n "$$POSTGRES_TEST_DSN" || (echo "Set POSTGRES_TEST_DSN to an isolated test database"; exit 1)
+	@go test -count=1 -v ./adapters/sink/postgres
+
 # Format the code using go fmt.
 .PHONY: fmt
 fmt:

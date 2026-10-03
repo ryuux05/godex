@@ -462,6 +462,8 @@ http.Handle("/metrics", promhttp.Handler())
 - [Decoder Guide](docs/decoder.md) - Event decoding and routing
 - [RPC Guide](docs/rpc.md) - RPC client configuration and optimization
 - [Sink Guide](docs/sink.md) - Storage backends and persistence
+- [Testing Guide](docs/testing.md) - Race detection, PostgreSQL integration tests, and fuzzing
+- [Repository Review](docs/repository-review.md) - Coverage improvements and remaining priorities
 
 ## License
 

@@ -68,7 +68,7 @@ func (p *Processor) Status() ProcessorStatus {
 			ChainId:   chain.chainInfo.ChainId,
 			Name:      chain.chainInfo.Name,
 			IsRunning: p.isRunning,
-			IsLive:    chain.isLive,
+			IsLive:    chain.isLive.Load(),
 
 			// commited cursor
 			CursorBlock: chain.cursor.BlockNum,

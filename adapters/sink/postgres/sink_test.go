@@ -2,44 +2,57 @@ package postgres
 
 import (
 	"context"
-	"os"
-	"testing"
-	"time"
-	"strconv"
+	"fmt"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/ryuux05/godex/pkg/core/types"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"os"
+	"strconv"
+	"testing"
+	"time"
 )
 
-// getTestDB creates a test database connection
-// Set POSTGRES_TEST_DSN environment variable or use default
+// Each integration test owns a schema. No caller database tables are truncated.
+// An explicitly configured but unavailable database is a failure, including CI.
 func getTestDB(t *testing.T) *pgxpool.Pool {
+	t.Helper()
 	dsn := os.Getenv("POSTGRES_TEST_DSN")
 	if dsn == "" {
-		dsn = "postgres://postgres:dev@localhost:5432/postgres?sslmode=disable"
+		t.Skip("set POSTGRES_TEST_DSN to run PostgreSQL integration tests")
 	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	cfg, err := pgxpool.ParseConfig(dsn)
+	require.NoError(t, err)
+	admin, err := pgxpool.NewWithConfig(ctx, cfg)
+	require.NoError(t, err)
+	t.Cleanup(admin.Close)
+	require.NoError(t, admin.Ping(ctx), "configured PostgreSQL test database must be available")
 
-	pool, err := pgxpool.New(context.Background(), dsn)
-	if err != nil {
-		t.Skipf("Skipping test: unable to connect to test database: %v", err)
-		return nil
-	}
-
-	// Test connection
-	if err := pool.Ping(context.Background()); err != nil {
-		t.Skipf("Skipping test: unable to ping test database: %v", err)
-		return nil
-	}
-
+	schema := fmt.Sprintf("godex_test_%d", time.Now().UnixNano())
+	identifier := pgx.Identifier{schema}.Sanitize()
+	_, err = admin.Exec(ctx, "CREATE SCHEMA "+identifier)
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cleanupCancel()
+		_, err := admin.Exec(cleanupCtx, "DROP SCHEMA "+identifier+" CASCADE")
+		assert.NoError(t, err)
+	})
+	cfg = cfg.Copy()
+	cfg.ConnConfig.RuntimeParams["search_path"] = schema
+	pool, err := pgxpool.NewWithConfig(ctx, cfg)
+	require.NoError(t, err)
+	t.Cleanup(pool.Close)
 	return pool
 }
 
 // cleanupTestDB cleans up test data
 func cleanupTestDB(t *testing.T, pool *pgxpool.Pool) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-    defer cancel()
+	defer cancel()
 
 	_, err := pool.Exec(ctx, `
 		TRUNCATE TABLE chronicle_events CASCADE;
@@ -91,7 +104,7 @@ func TestNewSink(t *testing.T) {
 			Handler: handler,
 		})
 		assert.Error(t, err)
-		assert.Contains(t, err.Error(), "Pool is required")
+		assert.Contains(t, err.Error(), "pool is required")
 	})
 
 	t.Run("missing handler", func(t *testing.T) {
@@ -100,7 +113,7 @@ func TestNewSink(t *testing.T) {
 			Handler: nil,
 		})
 		assert.Error(t, err)
-		assert.Contains(t, err.Error(), "Handler is required")
+		assert.Contains(t, err.Error(), "handler is required")
 	})
 
 	t.Run("default copy threshold", func(t *testing.T) {
@@ -375,8 +388,8 @@ func TestLoadCursor(t *testing.T) {
 
 	handler := &mockHandler{}
 	sink, err := NewSink(SinkConfig{
-		Pool: pool,
-		Handler: handler,
+		Pool:          pool,
+		Handler:       handler,
 		CopyThreshold: 100,
 	})
 
