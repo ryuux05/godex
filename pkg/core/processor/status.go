@@ -1,42 +1,42 @@
 package processor
 
 import (
-	"time"
 	"fmt"
+	"time"
 )
 
 type ProcessorStatus struct {
-	IsRunning   bool                    `json:"is_running"`
-	Chains      map[string]ChainStatus  `json:"chains"`
-	StartTime   time.Time               `json:"start_time"`
-	TotalEvents uint64                  `json:"total_events"`
+	IsRunning   bool                   `json:"is_running"`
+	Chains      map[string]ChainStatus `json:"chains"`
+	StartTime   time.Time              `json:"start_time"`
+	TotalEvents uint64                 `json:"total_events"`
 }
 
 type ChainStatus struct {
-	ChainId             string    `json:"chain_id"`
-	Name                string    `json:"name"`
-	IsRunning           bool      `json:"is_running"`
-	IsLive              bool      `json:"is_live"`
+	ChainId   string `json:"chain_id"`
+	Name      string `json:"name"`
+	IsRunning bool   `json:"is_running"`
+	IsLive    bool   `json:"is_live"`
 
-	CursorBlock         uint64    `json:"cursor_block"`
-	CursorHash          string    `json:"cursor_hash"`
-	HeadBlock           uint64    `json:"head_block"`
+	CursorBlock uint64 `json:"cursor_block"`
+	CursorHash  string `json:"cursor_hash"`
+	HeadBlock   uint64 `json:"head_block"`
 
-	BlocksBehind        uint64    `json:"blocks_behind"`
-	ProgressPct         float64   `json:"progress_pct"`
-	BlocksPerSec        float64   `json:"blocks_per_sec"`
-	EventsTotal         uint64    `json:"events_total"`
-	EventsPerSec        float64   `json:"events_per_sec"`
-	ETA                 string    `json:"eta"`
+	BlocksBehind uint64  `json:"blocks_behind"`
+	ProgressPct  float64 `json:"progress_pct"`
+	BlocksPerSec float64 `json:"blocks_per_sec"`
+	EventsTotal  uint64  `json:"events_total"`
+	EventsPerSec float64 `json:"events_per_sec"`
+	ETA          string  `json:"eta"`
 
-	LastProgressAt      time.Time `json:"last_progress_at"`
-	LastError           string    `json:"last_error"`
-	LastErrorAt         time.Time `json:"last_error_at"`
+	LastProgressAt time.Time `json:"last_progress_at"`
+	LastError      string    `json:"last_error"`
+	LastErrorAt    time.Time `json:"last_error_at"`
 
-	ConfirmationDepth   uint64    `json:"confirmation_depth"`
-	RangeSize           int       `json:"range_size"`
-	FetcherConcurrency  int       `json:"fetcher_concurrency"`
-	DecoderConcurrency  int       `json:"decoder_concurrency"`
+	ConfirmationDepth  uint64 `json:"confirmation_depth"`
+	RangeSize          int    `json:"range_size"`
+	FetcherConcurrency int    `json:"fetcher_concurrency"`
+	DecoderConcurrency int    `json:"decoder_concurrency"`
 }
 
 type HealthReport struct {
@@ -49,12 +49,13 @@ type HealthReport struct {
 func (p *Processor) Status() ProcessorStatus {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
-	
+
 	status := ProcessorStatus{
 		IsRunning: p.isRunning,
 		Chains:    make(map[string]ChainStatus),
+		StartTime: p.startTime,
 	}
-	
+
 	for chainId, chain := range p.chains {
 		snap := chain.progress.Snapshot()
 
@@ -67,7 +68,7 @@ func (p *Processor) Status() ProcessorStatus {
 		cs := ChainStatus{
 			ChainId:   chain.chainInfo.ChainId,
 			Name:      chain.chainInfo.Name,
-			IsRunning: p.isRunning,
+			IsRunning: chain.running.Load(),
 			IsLive:    chain.isLive.Load(),
 
 			// commited cursor
@@ -95,6 +96,7 @@ func (p *Processor) Status() ProcessorStatus {
 		}
 
 		status.Chains[chainId] = cs
+		status.TotalEvents += snap.events
 	}
 
 	return status
@@ -107,12 +109,12 @@ func (p *Processor) Health() HealthReport {
 
 	p.mu.RLock()
 	defer p.mu.RUnlock()
-	
+
 	report := HealthReport{
-		Healthy: true,
+		Healthy:   true,
 		IsRunning: p.isRunning,
-		Chains: make(map[string]bool, len(p.chains)),
-		Reasons : []string{},
+		Chains:    make(map[string]bool, len(p.chains)),
+		Reasons:   []string{},
 	}
 
 	if !p.isRunning {
@@ -139,7 +141,11 @@ func (p *Processor) Health() HealthReport {
 
 		// stalled progress check (only meaningful when running)
 		if p.isRunning && !snap.lastProgressAt.IsZero() {
-			if now.Sub(snap.lastProgressAt) > stallThreshold {
+			var target uint64
+			if snap.head > chain.opts.ConfirmationDepth {
+				target = snap.head - chain.opts.ConfirmationDepth
+			}
+			if snap.current < target && now.Sub(snap.lastProgressAt) > stallThreshold {
 				ok = false
 				report.Reasons = append(report.Reasons, fmt.Sprintf("[%s] stalled for %s", chainID, now.Sub(snap.lastProgressAt)))
 			}
@@ -154,4 +160,3 @@ func (p *Processor) Health() HealthReport {
 	return report
 
 }
-

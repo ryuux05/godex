@@ -76,12 +76,12 @@ func TestDecodeMalformedLog(t *testing.T) {
 	for _, topic := range []string{"", "0", "0x", "0xzz"} {
 		t.Run("indexed topic "+topic, func(t *testing.T) {
 			l := types.Log{Topics: []string{utils.FunctionSignatureToTopic("Transfer(address,address,uint256)"), topic, "0x" + abiWord(1)}, Data: "0x" + abiWord(1), BlockNumber: "0x1", LogIndex: "0x0"}
-			assert.NotPanics(t, func() { ev, err := d.Decode("transfer", "1", l); assert.NoError(t, err); assert.Nil(t, ev) })
+			assert.NotPanics(t, func() { ev, err := d.Decode("transfer", "1", l); assert.Error(t, err); assert.Nil(t, ev) })
 		})
 	}
 	for _, data := range []string{"", "0", "0x", "0x" + abiWord(^uint64(0))} {
 		l := types.Log{Topics: []string{utils.FunctionSignatureToTopic("StringEvent(string)")}, Data: data}
-		assert.NotPanics(t, func() { ev, err := d.Decode("string", "1", l); assert.NoError(t, err); assert.Nil(t, ev) })
+		assert.NotPanics(t, func() { ev, err := d.Decode("string", "1", l); assert.Error(t, err); assert.Nil(t, ev) })
 	}
 }
 

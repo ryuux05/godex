@@ -83,8 +83,8 @@ type HTTPRPC = rpc.HTTPRPC
 type RetryConfig = rpc.RetryConfig
 
 // NewHTTPRPC creates a new rate-limited HTTP RPC client for blockchain interactions.
-// The client automatically handles request retries, exponential backoff, and
-// context cancellation. Rate limiting prevents overwhelming RPC endpoints.
+// The client handles rate limiting and context cancellation. The processor
+// applies RetryConfig; direct RPC calls do not retry automatically.
 func NewHTTPRPC(endpoint string, rateLimit uint16, burstLimit uint16) *HTTPRPC {
 	return rpc.NewHTTPRPC(endpoint, rateLimit, burstLimit)
 }
@@ -100,6 +100,7 @@ func DefaultRetryConfig() RetryConfig {
 // ============================================================================
 
 type Sink = sink.Sink
+type WindowSink = sink.WindowSink
 type Metrics = metrics.Metrics
 type NoopMetrics = metrics.Noop
 

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/ryuux05/godex/pkg/core/rpc"
+	"github.com/ryuux05/godex/pkg/core/sink"
 	"github.com/ryuux05/godex/pkg/core/types"
 	"github.com/ryuux05/godex/pkg/core/utils"
 )
@@ -67,6 +68,9 @@ func (p *Processor) arbiter(ctx context.Context, chain *chainState, results <-ch
 				}
 
 				delete(window, next)
+				if chain.pendingRanges != nil {
+					<-chain.pendingRanges
+				}
 				next = r.Range.To + 1
 			}
 		}
@@ -130,7 +134,10 @@ func (p *Processor) processWindow(ctx context.Context, chain *chainState, result
 	}
 
 	// Decode logs
-	events := p.decodeLogs(ctx, chain, result)
+	events, err := p.decodeLogs(ctx, chain, result)
+	if err != nil {
+		return err
+	}
 
 	// get the endblock to store in the window
 	endBlock, err := p.getBlockWithRetry(ctx, to, chain)
@@ -142,11 +149,17 @@ func (p *Processor) processWindow(ctx context.Context, chain *chainState, result
 	if len(events) > 0 {
 		// time to calculate sink duration
 		start := time.Now()
-		if err := p.sink.Store(ctx, events); err != nil {
+		var writeErr error
+		if windowSink, ok := p.sink.(sink.WindowSink); ok {
+			writeErr = windowSink.StoreWindow(ctx, chain.chainInfo.ChainId, to, endBlock.Hash, events)
+		} else {
+			writeErr = p.sink.Store(ctx, events)
+		}
+		if writeErr != nil {
 			// metrics to observe sink write in failure
 			p.metrics.IncSinkErrors(chain.chainInfo.ChainId)
 			p.metrics.ObservedSinkWriteDuration(chain.chainInfo.ChainId, time.Since(start), false)
-			return err
+			return writeErr
 		}
 		// metrics
 		p.metrics.IncSinkWrites(chain.chainInfo.ChainId, uint64(len(events)))
@@ -165,14 +178,14 @@ func (p *Processor) processWindow(ctx context.Context, chain *chainState, result
 	}
 
 	// update progress
-	time := time.Now()
-	chain.progress.Update(to, chain.progress.eventsStored+uint64(len(events)), time)
+	now := time.Now()
 
 	// store the end of window for reorg check
 	chain.blockHashCache.Set(to, endBlock.Hash)
 
 	// update the in-memory cursor
 	p.mu.Lock()
+	chain.progress.Commit(to, uint64(len(events)), now)
 	chain.cursor.BlockNum = to
 	chain.cursor.BlockHash = endBlock.Hash
 	p.mu.Unlock()
@@ -187,16 +200,19 @@ func (p *Processor) processWindow(ctx context.Context, chain *chainState, result
 
 // function to decode log into events along with timestamp
 // return empty events if there is no log
-func (p *Processor) decodeLogs(ctx context.Context, chain *chainState, fetchResult FetchResult) []types.Event {
+func (p *Processor) decodeLogs(ctx context.Context, chain *chainState, fetchResult FetchResult) ([]types.Event, error) {
 	// return immediately if there is no logs
 	if len(fetchResult.Logs) <= 0 {
-		return []types.Event{}
+		return []types.Event{}, nil
 	}
 
 	// storage to store decoded events
 	events := make([]types.Event, 0, len(fetchResult.Logs))
 
 	for _, l := range fetchResult.Logs {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		topic0 := ""
 		if len(l.Topics) > 0 {
 			topic0 = l.Topics[0]
@@ -209,6 +225,9 @@ func (p *Processor) decodeLogs(ctx context.Context, chain *chainState, fetchResu
 		// Decode
 		event, err := chain.router.Decode(chain.chainInfo.ChainId, l)
 		if err != nil {
+			if !chain.opts.SkipDecodeErrors {
+				return nil, fmt.Errorf("decode log %s:%s: %w", l.TransactionHash, l.LogIndex, err)
+			}
 			p.logger.Warn("failed to decode log", slog.String("chain_id", chain.chainInfo.ChainId), slog.Any("error", err))
 			continue
 		}
@@ -229,5 +248,5 @@ func (p *Processor) decodeLogs(ctx context.Context, chain *chainState, fetchResu
 		}
 	}
 
-	return events
+	return events, nil
 }

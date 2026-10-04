@@ -24,6 +24,7 @@ func (p *Processor) planJobs(ctx context.Context, chain *chainState) (<-chan Blo
 
 	// Already caught up
 	if chain.cursor.BlockNum >= target {
+		chain.pendingRanges = nil
 		chain.isLive.Store(true)
 		ch := make(chan BlockRange)
 		close(ch)
@@ -31,6 +32,8 @@ func (p *Processor) planJobs(ctx context.Context, chain *chainState) (<-chan Blo
 	}
 
 	jobs := make(chan BlockRange, chain.opts.FetcherConcurrency)
+	pendingRanges := make(chan struct{}, chain.opts.MaxInFlightRanges)
+	chain.pendingRanges = pendingRanges
 
 	start := chain.cursor.BlockNum + 1
 	go func() {
@@ -44,10 +47,16 @@ func (p *Processor) planJobs(ctx context.Context, chain *chainState) (<-chan Blo
 			rs = uint64(1)
 		}
 
-		for from := start; from <= target; from += rs {
-			to := from + rs - 1
-			if to > target {
-				to = target
+		for from := start; from <= target; {
+			span := rs - 1
+			if span > target-from {
+				span = target - from
+			}
+			to := from + span
+			select {
+			case <-ctx.Done():
+				return
+			case pendingRanges <- struct{}{}:
 			}
 
 			select {
@@ -55,6 +64,10 @@ func (p *Processor) planJobs(ctx context.Context, chain *chainState) (<-chan Blo
 				return
 			case jobs <- BlockRange{From: from, To: to}:
 			}
+			if to == target {
+				return
+			}
+			from = to + 1
 		}
 	}()
 
@@ -64,8 +77,10 @@ func (p *Processor) planJobs(ctx context.Context, chain *chainState) (<-chan Blo
 func (p *Processor) getHead(ctx context.Context, chain *chainState) (uint64, error) {
 	var headHex string
 	err := rpc.RetryWithBackoff(ctx, *chain.opts.RetryConfig, func() error {
+		reqCtx, cancel := context.WithTimeout(ctx, chain.opts.RetryConfig.PerRequestTimeout)
+		defer cancel()
 		var err error
-		headHex, err = chain.chainInfo.RPC.Head(ctx)
+		headHex, err = chain.chainInfo.RPC.Head(reqCtx)
 		return err
 	})
 	if err != nil {

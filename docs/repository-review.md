@@ -69,23 +69,54 @@ calls from another package's tests do not inflate these package figures.
 - CI had duplicate YAML keys, a lint job outside `jobs`, and no database service.
   It now builds, vets, runs race tests with PostgreSQL, and saves coverage.
 
+## Production hardening pass
+
+The production pass adds 29 test functions with table-driven cases and addresses
+persistence and execution contracts beyond statement coverage. Final SDK and
+adapter statement coverage is 92.3% (examples remain untested):
+
+- Conflict-safe COPY staging now matches INSERT replay behavior. Only new IDs
+  invoke database handlers, including concurrent replay and threshold transitions.
+- The optional `WindowSink` operation commits events, handler data, and full-window
+  cursor atomically. Old replay cannot regress the cursor; a conflicting current
+  hash fails without committing. PostgreSQL implements this capability.
+- Optional transactional handler rollback supports application-owned reorg data.
+  Begin, handler, deferred commit, rollback-hook, and panic cleanup paths are tested.
+- Configuration validation runs before persistence access; registration snapshots
+  mutable settings and routes, rejects duplicates, and offers bounded cursor loading.
+- Outstanding ranges are bounded through ordered-commit acknowledgments. Idle
+  polling is configurable and cancellable, lifecycle calls are guarded, and chain
+  lookup/registration is safe during concurrent reads.
+- Status includes start time, running flags, and aggregate event counts. Rollback
+  resets progress, successful recovery clears errors, and caught-up idle chains
+  stay healthy.
+- Malformed matching ABI fields stop processing by default. All integer widths
+  enforce their declared bounds; indexed dynamic values retain their hashes.
+  Unsupported ABIs and context-free batch decoding fail explicitly.
+- RPC null/missing results and missing/mismatched IDs are rejected. Zero burst
+  with positive rate limiting receives a usable default, and retry arithmetic is
+  validated and capped before conversion.
+- Repeated schema initialization retains existing index names. Library build
+  targets and public API examples are corrected; tagged releases reuse CI's
+  PostgreSQL and race gates.
+- A real PostgreSQL integration test covers sparse-window persistence, live reorg,
+  projection rollback, replacement branch indexing, cancellation, and restart.
+
 ## Remaining priorities
 
-These findings are follow-up work, not assertions that the current suite covers
-every failure mode.
+These are concrete boundaries of this pass, with deployment guidance in
+[production.md](production.md).
 
-| Priority | Finding and source | Recommended next work |
+| Priority | Finding | Next work |
 | --- | --- | --- |
-| High | `PGSink.copyInternalEvents` rejects duplicate IDs, while `insertInternalEvents` ignores them. INSERT still invokes handlers for replayed IDs. | Define replay semantics for both internal events and handler effects; test replay across the COPY threshold before introducing conflict-safe bulk insertion. |
-| High | `Processor.addChain` divides by `RangeSize` without validation and stores caller-owned options. Nil dependencies, nonpositive concurrency, invalid fetch modes, and zero-attempt retry configs are not rejected consistently. | Validate configuration before cursor loading; test invalid options and snapshot mutable configuration. |
-| High | `StandardDecoder.Decode` silently skips field decode failures, while `DecodeBatch` is a no-op in both standard and router decoders. Indexed dynamic values, arrays, tuples, and additional integer widths need explicit support decisions. Narrow unsigned values are checked against uint64, not their declared width. | Define unsupported/malformed data behavior, enforce ABI widths, and build fixture tests for each supported Solidity type. |
-| Medium | `runChain` immediately repeats `processBatch` when planning finds no work. | Add configurable polling/backoff and test request counts during idle live operation and prompt cancellation. |
-| Medium | Reorg recovery updates the cursor but does not reset the progress snapshot. `lastErr` is retained after a recovered reorg; `ProcessorStatus.StartTime` and `TotalEvents` are never populated. | Define health recovery semantics; test snapshots immediately after rollback, aggregate counters, and recovery after transient errors. |
-| Medium | `processWindow` advances its in-memory cursor to the window end, while a nonempty sink batch persists the last event's block. Empty trailing blocks in that window can be replayed after restart. | Define an atomic events-plus-window-cursor operation and test restart after a sparse window. |
-| Medium | `GetChain` and `IsLive` access the chain map without a lock; unknown `GetChain` IDs panic. Registration can replace an existing chain ID. | Define lookup and registration behavior; add concurrent registration/read tests and duplicate/unknown ID cases. |
-| Medium | `PGSink.Store` updates only the final event's chain cursor and assumes sorted events. `schema_internal.sql` creates unnamed indexes on every initialization. | Enforce single-chain ordered batches or update each chain explicitly; make schema initialization idempotent and test repeated construction. |
-| Medium | The full suite still does not inject transaction begin/commit failures, HTTP null results, all malformed batch envelopes, or very deep reorg budget exhaustion. | Add focused fault injection and a processor-plus-PostgreSQL reorg/restart scenario. |
-| Low | `Makefile` build/run/migrate targets reference absent `cmd` paths; README quick-start decoder wiring differs from the exported router API. Examples remain untested. | Align library build targets and docs with the public SDK smoke test; add tests for example handlers and release packaging. |
+| High | Multiple processes can race cursor ownership and canonical rollback; insert deduplication does not provide distributed fencing. | Add a per-chain lease with fencing and recovery tests involving competing owners. Until then run one writer per chain/namespace. |
+| High | ERC20 and swap example handlers write projections without `RollbackHandler`. Their schemas/aggregates need explicit reversal rules. | Add chain/block provenance, implement transactional rollback, and test each example against canonical and orphaned fixture history. |
+| High | Log fetch and header reads can observe different canonical views when a provider reorganizes during a window. | Add provider-switch/mixed-history fixtures and define full-window hash consistency checks before commit. Confirmation depth reduces exposure but does not prove consistency. |
+| Medium | Global event IDs can collide across networks sharing the same block/transaction hashes; existing IDs lack chain namespace. | Design a migration for chain-scoped identity and existing handler references. Use separate schemas or chain-namespaced custom IDs for affected deployments. |
+| Medium | Arrays, tuples, anonymous events, and fixed byte sizes other than bytes32 are unsupported and now rejected explicitly. | Add ABI conformance fixtures and implement supported extensions with a defined compatibility contract. |
+| Medium | PostgreSQL's replay-safe COPY now stages rows and merges them, adding per-batch work. | Benchmark INSERT/COPY crossover with realistic payload sizes and replay proportions before tuning the threshold. |
+| Medium | Reorg search has a bounded in-memory history and a conservative fallback; headers are not persisted for exact recovery across restarts. | Test deep reorg/fallback budgets and consider durable header history for exact ancestor discovery. |
+| Low | Metrics can count the same write twice when one collector is supplied to both processor and sink. | Define layer-specific metric ownership; currently use processor metrics and the sink's default no-op, or separate namespaces. |
 
 ## Validation
 
@@ -97,3 +128,11 @@ and checked for its service, DSN, and race-test step; the hosted GitHub workflow
 itself has not been executed during this local review.
 
 Commands and database setup are documented in [testing.md](testing.md).
+
+
+For the production pass, the full race suite passed with PostgreSQL configured;
+`make build vet` passed, and the README quick-start compiled independently.
+CI/release YAML passed duplicate-key and gate-configuration checks. The log
+decoder fuzz target ran for five seconds with 781,768 executions and no failure.
+Hosted workflows have not been run locally. The disposable database was removed
+after validation.

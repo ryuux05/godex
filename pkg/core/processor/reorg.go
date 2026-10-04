@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"time"
 
 	coreerrors "github.com/ryuux05/godex/pkg/core/errors"
 	"github.com/ryuux05/godex/pkg/core/rpc"
@@ -33,6 +34,7 @@ func (p *Processor) detectReorg(ctx context.Context, chain *chainState, currentB
 		p.mu.Lock()
 		chain.cursor.BlockHash = hash
 		chain.cursor.BlockNum = ancestor
+		chain.progress.Rollback(ancestor, time.Now())
 		p.mu.Unlock()
 
 		return &coreerrors.ReorgError{

@@ -1,6 +1,6 @@
 # godex
 
-A high-performance, production-ready blockchain indexing SDK written in Go for building scalable EVM-compatible blockchain indexers. Features automatic reorganization handling, intelligent multi-contract event routing, concurrent multi-chain processing, and structured event persistence.
+A blockchain indexing SDK written in Go for building scalable EVM-compatible blockchain indexers. Features automatic reorganization handling, intelligent multi-contract event routing, concurrent multi-chain processing, and structured event persistence.
 
 ## Features
 
@@ -8,7 +8,7 @@ A high-performance, production-ready blockchain indexing SDK written in Go for b
 - **Automatic Reorganization Handling**: Built-in detection and rollback for blockchain reorganizations
 - **Intelligent Event Routing**: DecoderRouter enables complex multi-contract scenarios
 - **High-Performance Processing**: Concurrent fetching with configurable worker pools and batch RPC requests
-- **Production-Ready Storage**: Transactional event persistence with atomic rollback support
+- **Transactional Storage**: Transactional event persistence with atomic rollback support
 - **Comprehensive Observability**: Structured logging, metrics collection, and health monitoring
 
 ## Installation
@@ -21,63 +21,60 @@ go get github.com/ryuux05/godex
 
 ### Basic Setup
 
+Set `DATABASE_URL` and `RPC_URL`, then run:
+
 ```go
 package main
 
 import (
     "context"
-    "log/slog"
+    "log"
     "os"
     "os/signal"
     "syscall"
-    
+
+    "github.com/jackc/pgx/v5"
     "github.com/jackc/pgx/v5/pgxpool"
-    "github.com/ryuux05/godex/pkg/core"
-    "github.com/ryuux05/godex/pkg/core/decoder"
     "github.com/ryuux05/godex/adapters/sink/postgres"
+    "github.com/ryuux05/godex/pkg/core/decoder"
+    "github.com/ryuux05/godex/pkg/godex"
 )
 
+// This example stores decoded events in chronicle_events. For application
+// tables, implement Handle and the transactional RollbackHandler hook.
+type EventHandler struct{}
+func (EventHandler) Handle(context.Context, pgx.Tx, godex.Event) error { return nil }
+
+const erc20ABI = `[{"type":"event","name":"Transfer","inputs":[{"name":"from","type":"address","indexed":true},{"name":"to","type":"address","indexed":true},{"name":"value","type":"uint256"}]}]`
+
 func main() {
-    // Initialize RPC client
-    rpc := core.NewHTTPRPC("https://eth-mainnet.g.alchemy.com/v2/YOUR_KEY", 20, 5)
-
-    // Initialize PostgreSQL sink
-    pool, _ := pgxpool.New(context.Background(), "postgres://user:pass@localhost:5432/godex")
-    handler := &MyEventHandler{}
-    sink, _ := postgres.NewSink(postgres.SinkConfig{
-        Pool:    pool,
-        Handler: handler,
-    })
-
-    // Configure indexing options
-    opts := &core.Options{
-        RangeSize:          1000,
-        FetcherConcurrency: 4,
-        StartBlock:         18000000,
-        ConfirmationDepth:  12,
-        Topics: [][]string{{
-            "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef",
-        }},
-    }
-
-    // Setup decoder
-    dec := decoder.NewStandardDecoder()
-    dec.RegisterABI("ERC20", erc20ABI)  // Load ABI from file or embed
-
-    // Create and run processor
-    processor := core.NewProcessor(nil, sink)
-    processor.SetLogger(slog.Default())
-
-    processor.AddChain(core.ChainInfo{
-        ChainId: "1",
-        Name:    "Ethereum",
-        RPC:     rpc,
-    }, opts, dec)
-
     ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
     defer cancel()
 
-    processor.Run(ctx)
+    pool, err := pgxpool.New(ctx, os.Getenv("DATABASE_URL"))
+    if err != nil { log.Fatal(err) }
+    defer pool.Close()
+    sink, err := postgres.NewSinkContext(ctx, postgres.SinkConfig{Pool: pool, Handler: EventHandler{}})
+    if err != nil { log.Fatal(err) }
+
+    dec := decoder.NewStandardDecoder()
+    if err := dec.RegisterABI("ERC20", erc20ABI); err != nil { log.Fatal(err) }
+    topic := "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"
+    router := decoder.NewDecoderRouter().Register(decoder.ByTopic0(topic), "ERC20", dec)
+
+    p := godex.NewProcessor(nil, sink)
+    opts := &godex.Options{
+        RangeSize: 1000,
+        FetcherConcurrency: 4,
+        StartBlock: 17_999_999, // First indexed block: 18,000,000.
+        ConfirmationDepth: 12,
+        Topics: [][]string{{topic}},
+    }
+    if err := p.AddChainContext(ctx, godex.ChainInfo{
+        ChainId: "1", Name: "Ethereum",
+        RPC: godex.NewHTTPRPC(os.Getenv("RPC_URL"), 20, 5),
+    }, opts, router); err != nil { log.Fatal(err) }
+    if err := p.Run(ctx); err != nil { log.Fatal(err) }
 }
 ```
 
@@ -89,19 +86,22 @@ func main() {
 |--------|------|---------|-------------|
 | `RangeSize` | `int` | Required | Blocks per batch (see tuning guide below) |
 | `FetcherConcurrency` | `int` | Required | Concurrent RPC workers (see tuning guide below) |
-| `StartBlock` | `uint64` | 0 | Starting block (0 = resume from cursor) |
+| `StartBlock` | `uint64` | 0 | Initial cursor; indexing begins at StartBlock + 1 (0 = resume) |
 | `ConfirmationDepth` | `uint64` | Required | Blocks to wait before processing |
 | `EnableTimestamps` | `bool` | `false` | Include block timestamps (increases RPC calls) |
 | `Topics` | `[][]string` | Required | Event signature hashes to filter |
 | `Addresses` | `[]string` | Optional | Contract addresses to monitor |
 | `FetchMode` | `FetchMode` | `FetchModeLogs` | `FetchModeLogs` or `FetchModeReceipts` |
 | `ReorgLookbackBlocks` | `uint64` | 64 | Max blocks for reorg ancestor search |
+| `PollInterval` | `time.Duration` | 1s | Head polling delay when caught up |
+| `MaxInFlightRanges` | `int` | 2 × workers | Maximum fetched ranges awaiting ordered commits |
+| `SkipDecodeErrors` | `bool` | `false` | Opt in to discarding logs with decode errors |
 | `RetryConfig` | `*RetryConfig` | Default | Retry configuration |
 
 ### RPC Configuration
 
 ```go
-rpc := core.NewHTTPRPC(
+rpc := godex.NewHTTPRPC(
     "https://your-rpc-endpoint.com",
     20,  // Requests per second (match provider limits)
     5,   // Burst capacity
@@ -111,7 +111,7 @@ rpc := core.NewHTTPRPC(
 ### Retry Configuration
 
 ```go
-retryConfig := &core.RetryConfig{
+retryConfig := &godex.RetryConfig{
     MaxAttempts:       3,
     InitialBackoff:    1 * time.Second,
     MaxBackoff:        30 * time.Second,
@@ -250,7 +250,7 @@ The SDK automatically handles "response too big" errors (typically error code `-
 opts.RangeSize = 100  // Down from 1000 to avoid large responses
 
 // Or use provider with larger limits
-rpc := core.NewHTTPRPC("https://provider-with-larger-limits.com", 20, 5)
+rpc := godex.NewHTTPRPC("https://provider-with-larger-limits.com", 20, 5)
 ```
 
 **Provider Response Size Limits:**
@@ -282,7 +282,7 @@ rpc := core.NewHTTPRPC("https://provider-with-larger-limits.com", 20, 5)
 // Example: Optimize for speed
 opts.FetcherConcurrency = 20  // Increase workers
 opts.RangeSize = 2000         // Larger batches
-opts.FetchMode = core.FetchModeLogs
+opts.FetchMode = godex.FetchModeLogs
 opts.UseLogsForHistoricalSync = true
 ```
 
@@ -409,22 +409,14 @@ opts.StartBlock = 0  // Use cursor if available
 ### Status and Health Checks
 
 ```go
-// Get chain status
-status, err := processor.Status("1")
-if err != nil {
-    log.Fatal(err)
-}
+status := p.Status()
+chain := status.Chains["1"]
 fmt.Printf("Block: %d/%d (%.1f%%) - %.0f blk/s\n",
-    status.CurrentBlock, status.HeadBlock,
-    status.ProgressPct, status.BlocksPerSec)
+    chain.CursorBlock, chain.HeadBlock, chain.ProgressPct, chain.BlocksPerSec)
 
-// Health check
-health, err := processor.Health(ctx)
-if err != nil {
-    log.Fatal(err)
-}
+health := p.Health()
 if !health.Healthy {
-    log.Printf("Unhealthy: %v", health.Errors)
+    log.Printf("Unhealthy: %v", health.Reasons)
 }
 ```
 
@@ -435,15 +427,15 @@ Enable Prometheus metrics for monitoring:
 ```go
 import "github.com/ryuux05/godex/adapters/metrics"
 
-metrics := metrics.NewPrometheusMetrics()
-processor := core.NewProcessor(metrics, sink)
+collector := metrics.New("godex", prometheus.DefaultRegisterer)
+processor := godex.NewProcessor(collector, sink)
 
 // Expose metrics endpoint
 http.Handle("/metrics", promhttp.Handler())
 ```
 
 **Key Metrics to Monitor:**
-- `godex_blocks_processed_total` - Indexing progress
+- `godex_block_processed_total` - Indexing progress
 - `godex_block_lag` - How far behind chain head
 - `godex_block_fetched_duration_seconds` - RPC performance
 - `godex_sink_events_writes_total` - Storage throughput
@@ -457,11 +449,12 @@ http.Handle("/metrics", promhttp.Handler())
 
 ## Documentation
 
-- [Architecture Overview](docs/indexer_architecture.md) - System architecture and design principles
+- [Architecture Overview](docs/architecture.md) - System architecture and design principles
 - [Processor Guide](docs/processor.md) - Processor configuration and behavior
 - [Decoder Guide](docs/decoder.md) - Event decoding and routing
 - [RPC Guide](docs/rpc.md) - RPC client configuration and optimization
 - [Sink Guide](docs/sink.md) - Storage backends and persistence
+- [Production Guide](docs/production.md) - Persistence contracts, deployment, and compatibility notes
 - [Testing Guide](docs/testing.md) - Race detection, PostgreSQL integration tests, and fuzzing
 - [Repository Review](docs/repository-review.md) - Coverage improvements and remaining priorities
 

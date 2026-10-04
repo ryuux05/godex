@@ -7,13 +7,16 @@ import (
 	"io"
 	"math/big"
 	"os"
+	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/ryuux05/godex/pkg/core/types"
 	"github.com/ryuux05/godex/pkg/core/utils"
 )
 
 type StandardDecoder struct {
+	mu     sync.RWMutex
 	events map[string]map[string]*types.EventDefinition
 }
 
@@ -30,12 +33,15 @@ func (d *StandardDecoder) Decode(name string, chainId string, log types.Log) (*t
 	}
 
 	// Get the ABI map by name
+	d.mu.RLock()
 	abi, exists := d.events[name]
 	if !exists {
+		d.mu.RUnlock()
 		return nil, fmt.Errorf("ABI '%s' not found", name)
 	}
 
 	e, exist := abi[strings.ToLower(log.Topics[0])]
+	d.mu.RUnlock()
 	if !exist {
 		return nil, nil
 	}
@@ -47,21 +53,25 @@ func (d *StandardDecoder) Decode(name string, chainId string, log types.Log) (*t
 	for _, input := range e.Inputs {
 		if input.Indexed == true {
 			if topicNum >= len(log.Topics) {
-				return nil, nil
+				return nil, fmt.Errorf("malformed %s field %s (%s)", e.Name, input.Name, input.Type)
 			}
 
 			if !strings.HasPrefix(log.Topics[topicNum], "0x") {
-				return nil, nil
+				return nil, fmt.Errorf("malformed %s field %s (%s)", e.Name, input.Name, input.Type)
 			}
-			value, err := decodeByType(log.Topics[topicNum][2:], input.Type)
+			indexedType := input.Type
+			if indexedType == "string" || indexedType == "bytes" {
+				indexedType = "bytes32"
+			}
+			value, err := decodeByType(log.Topics[topicNum][2:], indexedType)
 			if err != nil {
-				return nil, nil
+				return nil, fmt.Errorf("malformed %s field %s (%s): %w", e.Name, input.Name, input.Type, err)
 			}
 			field[input.Name] = value
 			topicNum++
 		} else {
 			if !strings.HasPrefix(log.Data, "0x") {
-				return nil, nil
+				return nil, fmt.Errorf("malformed %s field %s (%s)", e.Name, input.Name, input.Type)
 			}
 			if input.Type != "string" && input.Type != "bytes" {
 
@@ -74,12 +84,12 @@ func (d *StandardDecoder) Decode(name string, chainId string, log types.Log) (*t
 				hexEnd := 2 + (end * 2)
 
 				if hexEnd > len(log.Data) {
-					return nil, nil
+					return nil, fmt.Errorf("malformed %s field %s (%s)", e.Name, input.Name, input.Type)
 				}
 
 				value, err := decodeByType(log.Data[hexStart:hexEnd], input.Type)
 				if err != nil {
-					return nil, nil
+					return nil, fmt.Errorf("malformed %s field %s (%s): %w", e.Name, input.Name, input.Type, err)
 				}
 
 				field[input.Name] = value
@@ -89,7 +99,7 @@ func (d *StandardDecoder) Decode(name string, chainId string, log types.Log) (*t
 				// Offset is in byte
 				value, err := decodeByTypeWithOffset(log.Data[2:], dataOffset, input.Type)
 				if err != nil {
-					return nil, nil
+					return nil, fmt.Errorf("malformed %s field %s (%s): %w", e.Name, input.Name, input.Type, err)
 				}
 
 				field[input.Name] = value
@@ -122,7 +132,7 @@ func (d *StandardDecoder) Decode(name string, chainId string, log types.Log) (*t
 }
 
 func (d *StandardDecoder) DecodeBatch(logs []types.Log) (*[]types.Event, error) {
-	return nil, nil
+	return nil, fmt.Errorf("DecodeBatch requires ABI and chain context; use Decode")
 }
 
 func (d *StandardDecoder) RegisterABI(name, abiJson string) error {
@@ -132,6 +142,24 @@ func (d *StandardDecoder) RegisterABI(name, abiJson string) error {
 		return fmt.Errorf("invalid ABI JSON: %w", err)
 	}
 
+	for _, item := range abi {
+		if item.Type != "event" {
+			continue
+		}
+		if item.Anonymous {
+			return fmt.Errorf("anonymous event %s is unsupported", item.Name)
+		}
+		for _, input := range item.Inputs {
+			if input.Type == "string" || input.Type == "bytes" {
+				continue
+			}
+			if _, err := decodeByType(strings.Repeat("0", 64), input.Type); err != nil {
+				return fmt.Errorf("event %s field %s: %w", item.Name, input.Name, err)
+			}
+		}
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
 	if d.events[name] == nil {
 		d.events[name] = make(map[string]*types.EventDefinition)
 	}
@@ -194,28 +222,51 @@ func convertInputs(inputs []ABIInput) []types.EventInput {
 	return result
 }
 
-func decodeByType(hex string, types string) (any, error) {
-	switch types {
+func decodeByType(word string, typ string) (any, error) {
+	switch typ {
 	case "address":
-		return decodeAddress(hex)
-	case "uint256", "uint", "uint128", "uint160", "uint24":
-		return decodeBigInt(hex)
-	case "int256", "int":
-		return decodeSignedBigInt(hex, 256)
-	case "int128":
-		return decodeSignedBigInt(hex, 128)
-	case "int24":
-		return decodeSignedBigInt(hex, 24)
-	case "uint8", "uint16", "uint32", "uint64":
-		return decodeUint(hex)
+		return decodeAddress(word)
 	case "bool":
-		return decodeBool(hex)
+		return decodeBool(word)
 	case "bytes32":
-		return decodeBytes32(hex)
-	default:
-		// Handle arrays, tuples, or return error
-		return nil, fmt.Errorf("unidentified data type")
+		return decodeBytes32(word)
 	}
+	signed := strings.HasPrefix(typ, "int")
+	unsigned := strings.HasPrefix(typ, "uint")
+	if signed || unsigned {
+		prefix := "uint"
+		if signed {
+			prefix = "int"
+		}
+		width := strings.TrimPrefix(typ, prefix)
+		bits := 256
+		if width != "" {
+			var err error
+			bits, err = strconv.Atoi(width)
+			if err != nil {
+				return nil, fmt.Errorf("unsupported type %s", typ)
+			}
+		}
+		if bits < 8 || bits > 256 || bits%8 != 0 {
+			return nil, fmt.Errorf("invalid integer width %s", typ)
+		}
+		if signed {
+			return decodeSignedBigInt(word, uint(bits))
+		}
+		value, err := decodeBigInt(word)
+		if err != nil {
+			return nil, err
+		}
+		if value.Sign() < 0 || value.BitLen() > bits {
+			return nil, fmt.Errorf("value outside %s range", typ)
+		}
+		switch typ {
+		case "uint8", "uint16", "uint32", "uint64":
+			return value.Uint64(), nil
+		}
+		return value, nil
+	}
+	return nil, fmt.Errorf("unsupported ABI type %s", typ)
 }
 
 func decodeByTypeWithOffset(data string, offset int, types string) (any, error) {
@@ -238,6 +289,9 @@ func decodeAddress(hexData string) (string, error) {
 		return "", fmt.Errorf("invalid address hex: %w", err)
 	}
 
+	if strings.TrimLeft(hexData[:24], "0") != "" {
+		return "", fmt.Errorf("invalid address padding")
+	}
 	// address data is the last 20 bytes
 	addressHex := hexData[24:]
 
@@ -249,6 +303,9 @@ func decodeBigInt(hexData string) (*big.Int, error) {
 		return nil, fmt.Errorf("invalid big int hex length: expected 64, got %d", len(hexData))
 	}
 
+	if _, err := hex.DecodeString(hexData); err != nil {
+		return nil, fmt.Errorf("invalid integer hex: %w", err)
+	}
 	value := new(big.Int)
 
 	_, ok := value.SetString(hexData, 16)

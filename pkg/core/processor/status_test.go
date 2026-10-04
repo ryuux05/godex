@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestChainProgressSnapshot(t *testing.T) {
@@ -120,12 +121,14 @@ func TestHealthReportsFailures(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			p, c, _, _ := newPipeline(t)
 			p.isRunning = tc.running
+			c.progress.SetHead(10)
 			c.lastErr = tc.lastErr
 			c.progress.Update(0, 0, tc.lastProgress)
 			h := p.Health()
 			assert.Equal(t, tc.healthy, h.Healthy)
 			assert.Equal(t, tc.running, h.IsRunning)
 			if tc.reason != "" {
+				require.NotEmpty(t, h.Reasons)
 				assert.Contains(t, h.Reasons[0], tc.reason)
 			} else {
 				assert.Empty(t, h.Reasons)

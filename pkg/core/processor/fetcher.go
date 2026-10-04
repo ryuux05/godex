@@ -163,6 +163,10 @@ func (p *Processor) fetch(ctx context.Context, chain *chainState, job BlockRange
 
 func (p *Processor) fetchWithSplit(ctx context.Context, chain *chainState, job BlockRange) ([]types.Log, error) {
 	out := make([]types.Log, 0, 1024)
+	cfg := rpc.DefaultRetryConfig()
+	if chain.opts.RetryConfig != nil {
+		cfg = *chain.opts.RetryConfig
+	}
 
 	p.logger.Info("too big response occur, split request")
 	var walk func(from, to uint64) error
@@ -180,7 +184,9 @@ func (p *Processor) fetchWithSplit(ctx context.Context, chain *chainState, job B
 			Address:   chain.addresses,
 		}
 
-		l, err := chain.chainInfo.RPC.GetLogs(ctx, filter)
+		reqCtx, cancel := context.WithTimeout(ctx, cfg.PerRequestTimeout)
+		l, err := chain.chainInfo.RPC.GetLogs(reqCtx, filter)
+		cancel()
 		if err == nil {
 			out = append(out, l...)
 			return nil
@@ -226,6 +232,9 @@ func (p *Processor) fetchTimestamps(ctx context.Context, chain *chainState, logs
 	}
 
 	// Convert to slice for batch request
+	if len(uniqueBlocks) == 0 {
+		return map[uint64]uint64{}, nil
+	}
 	blockNumbers := make([]string, 0, len(uniqueBlocks))
 	for bn := range uniqueBlocks {
 		blockNumbers = append(blockNumbers, utils.Uint64ToHexQty(bn))
@@ -245,6 +254,11 @@ func (p *Processor) fetchTimestamps(ctx context.Context, chain *chainState, logs
 
 	if err != nil {
 		return nil, fmt.Errorf("failed to get timestamp blocks: %w", err)
+	}
+	for _, number := range blockNumbers {
+		if _, ok := blocks[number]; !ok {
+			return nil, fmt.Errorf("missing timestamp block %s", number)
+		}
 	}
 
 	// Process batch results
@@ -277,8 +291,8 @@ func (p *Processor) fetchLogsFromReceipts(ctx context.Context, from uint64, to u
 
 		s_blockNum := utils.Uint64ToHexQty(blockNum)
 		rpcCtx, cancel := context.WithTimeout(ctx, chain.opts.RetryConfig.PerRequestTimeout)
-		defer cancel()
 		receipts, err := chain.chainInfo.RPC.GetBlockReceipts(rpcCtx, s_blockNum)
+		cancel()
 		if err != nil {
 			return nil, fmt.Errorf("failed to get receipts for block %d: %w", blockNum, err)
 		}
@@ -299,6 +313,9 @@ func (p *Processor) fetchLogsFromReceipts(ctx context.Context, from uint64, to u
 
 				allLogs = append(allLogs, log)
 			}
+		}
+		if blockNum == to {
+			break
 		}
 	}
 	return allLogs, nil

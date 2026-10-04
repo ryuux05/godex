@@ -6,7 +6,6 @@ import (
 	"github.com/ryuux05/godex/pkg/core/types"
 )
 
-
 type Sink interface {
 	// StoreBatch persists events from multiple blocks efficiently
 	// This is useful for batch operations and better performance
@@ -21,3 +20,10 @@ type Sink interface {
 	UpdateCursor(ctx context.Context, chainId string, newBlock uint64, blockHash string) error
 }
 
+// WindowSink atomically stores a chain's events and the full processed window's
+// cursor, including empty trailing blocks. Processor detects this capability;
+// legacy sinks retain the cursor semantics of their Store implementation.
+type WindowSink interface {
+	Sink
+	StoreWindow(ctx context.Context, chainId string, toBlock uint64, blockHash string, events []types.Event) error
+}

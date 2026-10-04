@@ -6,7 +6,6 @@ import (
 	"testing"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	coreerrors "github.com/ryuux05/godex/pkg/core/errors"
 	"github.com/ryuux05/godex/pkg/core/types"
@@ -139,26 +138,21 @@ func TestStoreInsertReplayIsIdempotent(t *testing.T) {
 	assert.Equal(t, 1, count)
 }
 
-func TestStoreCopyDuplicateRollsBackBatch(t *testing.T) {
+func TestStoreCopyReplayCommitsNewEvents(t *testing.T) {
 	pool := getTestDB(t)
 	s, err := NewSink(SinkConfig{Pool: pool, Handler: &mockHandler{}, CopyThreshold: 1})
 	require.NoError(t, err)
 	ctx := context.Background()
 	event := testEvent("original", "1", 1)
 	require.NoError(t, s.Store(ctx, []types.Event{event}))
-	// COPY currently rejects replayed IDs. Even on that failure, a new event
-	// in the same batch must not persist or advance the cursor.
-	err = s.Store(ctx, []types.Event{event, testEvent("new", "1", 2)})
-	var pgErr *pgconn.PgError
-	require.ErrorAs(t, err, &pgErr)
-	assert.Equal(t, "23505", pgErr.Code)
+	require.NoError(t, s.Store(ctx, []types.Event{event, testEvent("new", "1", 2)}))
 	var count int
 	require.NoError(t, pool.QueryRow(ctx, "SELECT count(*) FROM chronicle_events").Scan(&count))
-	assert.Equal(t, 1, count)
+	assert.Equal(t, 2, count)
 	n, h, err := s.LoadCursor(ctx, "1")
 	require.NoError(t, err)
-	assert.Equal(t, uint64(1), n)
-	assert.Equal(t, event.BlockHash, h)
+	assert.Equal(t, uint64(2), n)
+	assert.Equal(t, "hash-new", h)
 }
 
 func TestRollbackCursorFailureRestoresDeletedEvents(t *testing.T) {

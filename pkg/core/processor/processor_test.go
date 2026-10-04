@@ -21,6 +21,7 @@ import (
 	"github.com/ryuux05/godex/pkg/core/types"
 	"github.com/ryuux05/godex/pkg/core/utils"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 type NoopSink struct{}
@@ -1200,7 +1201,7 @@ func TestMultiChain_IndependentErrors(t *testing.T) {
 	polyEventCount := mockSink.GetEventCount()
 
 	finalEthCount := atomic.LoadInt64(&ethCallCount)
-    finalPolyCount := atomic.LoadInt64(&polyCallCount)
+	finalPolyCount := atomic.LoadInt64(&polyCallCount)
 	// Assertions
 	t.Logf("Run error: %v", runErr)
 	t.Logf("Ethereum calls: %d", finalEthCount)
@@ -1339,8 +1340,9 @@ func TestMultiChain_AddChainWhileRunning(t *testing.T) {
 	processor := NewProcessor(nil, mockSink)
 
 	opts := &Options{
-		RangeSize:  2,
-		StartBlock: 0,
+		RangeSize:          2,
+		FetcherConcurrency: 1,
+		StartBlock:         0,
 	}
 
 	// Use a channel to signal when the server handler is hit
@@ -1352,13 +1354,13 @@ func TestMultiChain_AddChainWhileRunning(t *testing.T) {
 		}
 		// Return a slow response but not block forever
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{"result": "0x1"})
+		_ = json.NewEncoder(w).Encode(map[string]any{"id": 1, "result": "0x0"})
 	}))
 	defer srv.Close()
 
 	router := decoder.NewDecoderRouter()
 	router.Register(func(log types.Log) bool { return true }, "test", &MockDecoder{})
-	processor.AddChain(ChainInfo{ChainId: "1", RPC: rpc.NewHTTPRPC(srv.URL, 1000, 1000)}, opts, router)
+	require.NoError(t, processor.AddChain(ChainInfo{ChainId: "1", RPC: rpc.NewHTTPRPC(srv.URL, 1000, 1000)}, opts, router))
 
 	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 	defer cancel()
@@ -1369,7 +1371,11 @@ func TestMultiChain_AddChainWhileRunning(t *testing.T) {
 	}()
 
 	// Wait until the server is hit (meaning processor is running)
-	<-serverHit
+	select {
+	case <-serverHit:
+	case <-ctx.Done():
+		t.Fatal("processor never requested head")
+	}
 
 	// Try to add chain while running
 	router2 := decoder.NewDecoderRouter()

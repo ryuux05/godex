@@ -43,8 +43,14 @@ assertion failures.
 The integration suite covers INSERT and COPY, handler transaction failures,
 rollback boundaries, chain isolation, cursor upserts, missing cursors, failed
 migrations, failed cursor updates after deletion, and duplicate event handling.
-COPY currently rejects duplicate IDs while INSERT ignores them; the COPY test
-verifies that the failed batch leaves stored events and its cursor intact.
+Both INSERT and COPY skip replayed IDs and invoke handlers only for new IDs.
+Tests cover threshold transitions, duplicates within a batch, concurrent replay,
+deferred commit failures, canceled initialization, panic cleanup, transactional
+handler rollback, conflicting cursor hashes, and repeated schema initialization.
+
+The processor/PostgreSQL recovery test indexes a sparse window, changes canonical
+history during live indexing, checks both event and projection rollback, and
+restarts from the full persisted window cursor.
 
 ## Fuzz tests
 
@@ -64,7 +70,9 @@ under `testdata/fuzz`; retain them as regression cases when a failure is fixed.
 
 Processor unit tests use controllable RPC and sink fakes. They exercise ordering,
 error propagation, cancellation, confirmed planning bounds, reorg recovery,
-timestamps, receipt filters, and status reads during commits. Channels coordinate
+timestamps, receipt filters, and status reads during commits. Configuration,
+registration snapshots, lifecycle guards, bounded outstanding ranges, idle
+polling, health after rollback, and full-width planning are covered too. Channels coordinate
 concurrent failures; bounded timeouts detect hangs.
 
 The public SDK smoke test exercises HTTP RPC, the ABI decoder and router, event

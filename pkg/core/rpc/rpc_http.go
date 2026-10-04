@@ -28,8 +28,8 @@ type HTTPRPC struct {
 // Response type for rpc
 type rpcResponse[T any] struct {
 	JSONRPC string           `json:"jsonrpc"`
-	ID      uint             `json:"id"`
-	Result  T                `json:"result"`
+	ID      *uint            `json:"id"`
+	Result  *T               `json:"result"`
 	Error   *errors.RPCError `json:"error"`
 }
 
@@ -44,6 +44,9 @@ type RPCResult interface {
 func NewHTTPRPC(endpoint string, rateLimit uint16, burstLimit uint16) *HTTPRPC {
 	var lim *rate.Limiter
 	if rateLimit > 0 {
+		if burstLimit == 0 {
+			burstLimit = 1
+		}
 		lim = rate.NewLimiter(rate.Limit(rateLimit), int(burstLimit))
 	}
 	return &HTTPRPC{
@@ -104,7 +107,13 @@ func call[T RPCResult](ctx context.Context, r *HTTPRPC, method string, params []
 		return zero, resp.Error
 	}
 
-	return resp.Result, nil
+	if resp.ID == nil || *resp.ID != 1 {
+		return zero, fmt.Errorf("%s returned missing or mismatched response ID", method)
+	}
+	if resp.Result == nil {
+		return zero, fmt.Errorf("%s returned null or missing result", method)
+	}
+	return *resp.Result, nil
 }
 
 // callBatch is the generic batch RPC caller.
@@ -184,18 +193,24 @@ func (r *HTTPRPC) GetBlocks(ctx context.Context, blockNumbers []string) (map[str
 	blocks := make(map[string]types.Block, len(blockNumbers))
 	seen := make([]bool, len(blockNumbers))
 	for _, res := range responses {
-		if res.ID >= uint(len(blockNumbers)) {
-			return nil, fmt.Errorf("batch eth_getBlockByNumber returned invalid id %d", res.ID)
+		if res.ID == nil {
+			return nil, fmt.Errorf("batch eth_getBlockByNumber returned missing id")
 		}
-		idx := int(res.ID)
+		if *res.ID >= uint(len(blockNumbers)) {
+			return nil, fmt.Errorf("batch eth_getBlockByNumber returned invalid id %d", *res.ID)
+		}
+		idx := int(*res.ID)
 		if res.Error != nil {
 			return nil, fmt.Errorf("batch eth_getBlockByNumber failed for block %s: %w", blockNumbers[idx], res.Error)
 		}
 		if seen[idx] {
-			return nil, fmt.Errorf("batch eth_getBlockByNumber returned duplicate id %d", res.ID)
+			return nil, fmt.Errorf("batch eth_getBlockByNumber returned duplicate id %d", *res.ID)
 		}
 		seen[idx] = true
-		blocks[blockNumbers[idx]] = res.Result
+		if res.Result == nil {
+			return nil, fmt.Errorf("batch eth_getBlockByNumber returned null or missing result for block %s", blockNumbers[idx])
+		}
+		blocks[blockNumbers[idx]] = *res.Result
 	}
 
 	for idx, ok := range seen {

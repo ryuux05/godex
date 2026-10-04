@@ -1,8 +1,12 @@
 name: CI
 
 on:
+  workflow_call:
   pull_request:
   push:
+
+permissions:
+  contents: read
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -12,6 +16,7 @@ jobs:
   test:
     name: Build and Test
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     services:
       postgres:
         image: postgres:16-alpine
