@@ -1,65 +1,62 @@
 name: CI
 
 on:
-    pull_request:
-        branches: ["*"]
-    push:
-        branches: ["*"]
+  workflow_call:
+  pull_request:
+  push:
+
+permissions:
+  contents: read
 
 concurrency:
-    group: ${{github.workflow}}
-    cancel-in-progress: true
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
-    test:
-        runs-on: ubuntu-latest
-        strategy:
-          matrix:
-            go-version: [1.23.x, 1.24.x]
-        name: Build and Test
-        runs-on: ubuntu-latest
-        steps:
-            - name: Checkout
-              uses: actions/checkout@v4
+  test:
+    name: Build and Test
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: godex-test
+          POSTGRES_DB: godex_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d godex_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      POSTGRES_TEST_DSN: postgres://postgres:godex-test@localhost:5432/godex_test?sslmode=disable
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
 
-            - name: Set up Go
-              uses: actions/setup-go@v5
-              with:
-                go-version-file: go.mod
-                cache: true
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
 
-            - name: Download modules
-              run: go mod download
+      - name: Download modules
+        run: go mod download
 
-            - name: Build
-              run: go build ./...
+      - name: Build
+        run: go build ./...
 
-            - name: Test
-              run: make test
-            
-            - name: Test with Race Detection
-              run: go test -race -coverprofile=coverage.out -covermode=atomic ./...
+      - name: Vet
+        run: go vet ./...
 
-            - name: Upload coverage to Codecov (optional)
-              uses: codecov/codecov-action@v3
-              with:
-                file: ./coverage.out
-            
-lint:
-  name: Lint
-  runs-on: ubuntu-latest
-  steps:
-  - name: Checkout
-    uses: actions/checkout@v4
+      - name: Test with race detection and PostgreSQL
+        run: make test-race
 
-  - name: Set up Go
-    uses: actions/setup-go@v5
-    with:
-      go-version-file: go.mod
-      cache: true
-
-  - name: Run golangci-lint
-    uses: golangci/golangci-lint-action@v3
-    with:
-      version: latest
-      args: --timeout=5m
+      - name: Upload coverage
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage
+          path: coverage.out

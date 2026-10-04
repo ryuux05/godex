@@ -567,11 +567,58 @@ func TestGetBlocks_PartialError(t *testing.T) {
 	defer cancel()
 
 	blocks, err := rpc.GetBlocks(ctx, []string{"0x1", "0x999"})
-	assert.NoError(t, err)
-	assert.Len(t, blocks, 1)
-	assert.Equal(t, "0xblock1", blocks["0x1"].Hash)
-	_, exists := blocks["0x999"]
-	assert.False(t, exists)
+	assert.ErrorContains(t, err, "block not found")
+	assert.Nil(t, blocks)
+}
+
+func TestGetBlocks_InvalidBatchID(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode([]map[string]any{
+			{
+				"jsonrpc": "2.0",
+				"id":      2,
+				"error": map[string]any{
+					"code":    -32000,
+					"message": "bad id",
+				},
+			},
+		})
+	}))
+	defer srv.Close()
+
+	rpc := NewHTTPRPC(srv.URL, 0, 0)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	blocks, err := rpc.GetBlocks(ctx, []string{"0x1", "0x2"})
+	assert.ErrorContains(t, err, "invalid id 2")
+	assert.Nil(t, blocks)
+}
+
+func TestGetBlocks_MissingBatchResponse(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode([]map[string]any{
+			{
+				"jsonrpc": "2.0",
+				"id":      0,
+				"result": map[string]any{
+					"number":     "0x1",
+					"hash":       "0xblock1",
+					"parentHash": "0x0",
+					"timestamp":  "0x65f5a000",
+				},
+			},
+		})
+	}))
+	defer srv.Close()
+
+	rpc := NewHTTPRPC(srv.URL, 0, 0)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	blocks, err := rpc.GetBlocks(ctx, []string{"0x1", "0x2"})
+	assert.ErrorContains(t, err, "missing response for block 0x2")
+	assert.Nil(t, blocks)
 }
 
 func TestGetBlocks_HTTPError(t *testing.T) {

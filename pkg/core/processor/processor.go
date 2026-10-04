@@ -5,7 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"reflect"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/ryuux05/godex/pkg/core/decoder"
@@ -45,11 +47,16 @@ type chainState struct {
 	addresses []string
 	// State of the processor of each chain
 	// Is it syncing historical block or live block
-	isLive bool
+	isLive  atomic.Bool
+	running atomic.Bool
+	// A permit remains occupied until its range is committed, bounding reordering.
+	pendingRanges chan struct{}
 	// options for processor
 	opts *Options
 	//chain Progress
 	progress *chainProgress
+	// router for decoding logs for this chain
+	router *decoder.DecoderRouter
 	// store the last err occured
 	lastErr string
 	// store time last error occured
@@ -67,42 +74,62 @@ type Processor struct {
 	// isRunning track the processor state if it's running or stopped.
 	// False by default until the processor run.
 	isRunning bool
+	startTime time.Time
 	// Mutex to access data safely
 	mu sync.RWMutex
 	// metrics
 	metrics metrics.Metrics
 	// Sink is a persistance storage
 	sink sink.Sink
-	// Router is used to store decoding condition and the respectitive decoder
-	// Decoder is used to decode log to a human readable event
-	// Each chain are able to to have different decoder
-	router *decoder.DecoderRouter
 	// logger is for strucutured logging
 	logger *slog.Logger
 }
 
 func NewProcessor(m metrics.Metrics, s sink.Sink) *Processor {
-	if m == nil {
+	if nilInterface(m) {
 		m = metrics.Noop{}
 	}
 	return &Processor{
-		chains: make(map[string]*chainState),
-		//logsCh:    make(map[string]chan types.Log),
+		chains:    make(map[string]*chainState),
 		metrics:   m,
 		sink:      s,
-		router:    nil,
 		logger:    slog.Default(),
 		isRunning: false,
 	}
 }
 
 func (p *Processor) AddChain(chain ChainInfo, opts *Options, router *decoder.DecoderRouter) error {
-	blockNum, blockHash, err := p.sink.LoadCursor(context.Background(), chain.ChainId)
-	p.logger.Info("cursor loaded from sink",
+	return p.AddChainContext(context.Background(), chain, opts, router)
+}
+
+// AddChainContext bounds cursor loading and validates before touching storage.
+func (p *Processor) AddChainContext(ctx context.Context, chain ChainInfo, opts *Options, router *decoder.DecoderRouter) error {
+	if nilInterface(p.sink) || nilInterface(chain.RPC) || router == nil {
+		return fmt.Errorf("sink, RPC and decoder router are required")
+	}
+	if chain.ChainId == "" {
+		return fmt.Errorf("chain ID is required")
+	}
+	normalized, err := normalizeOptions(opts)
+	if err != nil {
+		return err
+	}
+	p.mu.RLock()
+	logger := p.logger
+	running := p.isRunning
+	_, exists := p.chains[chain.ChainId]
+	p.mu.RUnlock()
+	if running || exists {
+		return fmt.Errorf("cannot add chain while running or replace registered chain %s", chain.ChainId)
+	}
+	loadCtx, cancel := context.WithTimeout(ctx, normalized.RetryConfig.PerRequestTimeout)
+	defer cancel()
+	blockNum, blockHash, err := p.sink.LoadCursor(loadCtx, chain.ChainId)
+	logger.Info("cursor loaded from sink",
 		slog.String("chain_id", chain.ChainId),
 		slog.Uint64("loaded_block_num", blockNum),
 		slog.String("loaded_block_hash", blockHash),
-		slog.Uint64("start_block", opts.StartBlock),
+		slog.Uint64("start_block", normalized.StartBlock),
 		slog.Any("error", err))
 
 	if err != nil {
@@ -119,29 +146,70 @@ func (p *Processor) AddChain(chain ChainInfo, opts *Options, router *decoder.Dec
 		blockNum = 0
 	}
 
-	return p.addChain(chain, opts, blockNum, blockHash, router)
+	return p.addChain(chain, normalized, blockNum, blockHash, router.Clone())
 }
 
+func nilInterface(value any) bool {
+	if value == nil {
+		return true
+	}
+	v := reflect.ValueOf(value)
+	switch v.Kind() {
+	case reflect.Ptr, reflect.Interface, reflect.Map, reflect.Func, reflect.Slice, reflect.Chan:
+		return v.IsNil()
+	}
+	return false
+}
+
+// SetLogger configures logging before Run. Calls during Run are ignored.
 func (p *Processor) SetLogger(l *slog.Logger) {
+	if l == nil {
+		l = slog.Default()
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.isRunning {
+		return
+	}
 	p.logger = l
 }
 
 func (p *Processor) GetChain(chainId string) ChainInfo {
-	return p.chains[chainId].chainInfo
+	chain, _ := p.LookupChain(chainId)
+	return chain
+}
+
+func (p *Processor) LookupChain(chainId string) (ChainInfo, error) {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	chain, ok := p.chains[chainId]
+	if !ok {
+		return ChainInfo{}, fmt.Errorf("chain %s not found", chainId)
+	}
+	return chain.chainInfo, nil
 }
 
 func (p *Processor) Run(ctx context.Context) error {
 	p.mu.Lock()
+	if p.isRunning {
+		p.mu.Unlock()
+		return fmt.Errorf("processor is already running")
+	}
+	if len(p.chains) == 0 {
+		p.mu.Unlock()
+		return fmt.Errorf("no chains registered")
+	}
 	p.isRunning = true
+	p.startTime = time.Now()
 	p.mu.Unlock()
-	defer func() { 
+	defer func() {
 		p.mu.Lock()
 		p.isRunning = false
 		p.mu.Unlock()
 	}()
 
 	g := errgroup.Group{}
-	for chainId, chain := range p.chains {	
+	for chainId, chain := range p.chains {
 		id := chainId
 		c := chain
 		//ch := p.logsCh[id]
@@ -166,6 +234,9 @@ func (p *Processor) addChain(chain ChainInfo, opts *Options, blockNum uint64, bl
 	if p.isRunning {
 		return fmt.Errorf("cannot add chain while processor is running")
 	}
+	if _, exists := p.chains[chain.ChainId]; exists {
+		return fmt.Errorf("chain %s is already registered", chain.ChainId)
+	}
 
 	startBlock := opts.StartBlock
 	if startBlock <= 0 {
@@ -175,7 +246,7 @@ func (p *Processor) addChain(chain ChainInfo, opts *Options, blockNum uint64, bl
 	var cursor *cursorState = &cursorState{}
 	if blockNum > 0 {
 
-		if blockNum > startBlock {
+		if blockNum >= startBlock {
 			cursor.BlockNum = blockNum
 			cursor.BlockHash = blockHash
 		} else {
@@ -190,8 +261,14 @@ func (p *Processor) addChain(chain ChainInfo, opts *Options, blockNum uint64, bl
 	}
 
 	// Clamp the max storedwindowhash bound.
-	rs := uint64(opts.RangeSize)                     // assume >0
-	base := (opts.ReorgLookbackBlocks + rs - 1) / rs // ceil
+	rs := uint64(opts.RangeSize) // assume >0
+	base := opts.ReorgLookbackBlocks / rs
+	if opts.ReorgLookbackBlocks%rs != 0 {
+		base++
+	}
+	if base > 255 {
+		base = 255
+	}
 	cap := base + 1
 	if cap < 8 {
 		cap = 8
@@ -206,7 +283,7 @@ func (p *Processor) addChain(chain ChainInfo, opts *Options, blockNum uint64, bl
 	// normalize all addresses before storing it
 	addressSet := make(map[string]struct{}, len(opts.Addresses))
 	addresses := make([]string, 0, len(opts.Addresses))
-	
+
 	for _, addr := range opts.Addresses {
 		addrStr := string(addr)
 		// Normalize for internal matching (lowercase, no 0x)
@@ -218,11 +295,11 @@ func (p *Processor) addChain(chain ChainInfo, opts *Options, blockNum uint64, bl
 			continue
 		}
 		addressSet[normalized] = struct{}{}
-		
+
 		// For RPC filter, always use "0x" + normalized (lowercase with 0x prefix)
 		addresses = append(addresses, "0x"+normalized)
 	}
-	
+
 	// If no addresses, set to nil (RPC will ignore it due to omitempty)
 	if len(addresses) == 0 {
 		addresses = nil
@@ -251,9 +328,8 @@ func (p *Processor) addChain(chain ChainInfo, opts *Options, blockNum uint64, bl
 		progress:           NewChainProgress(cursor.BlockNum),
 	}
 
+	chainState.router = router
 	p.chains[chain.ChainId] = chainState
-	//p.logsCh[chain.ChainId] = make(chan types.Log, opts.LogsBufferSize)
-	p.router = router
 
 	return nil
 }
@@ -271,16 +347,26 @@ func (p *Processor) addChain(chain ChainInfo, opts *Options, blockNum uint64, bl
 // }
 
 func (p *Processor) IsLive(chainId string) (bool, error) {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
 	_, exists := p.chains[chainId]
 	if !exists {
 		return false, fmt.Errorf("chain %s not found", chainId)
 	}
-	return p.chains[chainId].isLive, nil
+	return p.chains[chainId].isLive.Load(), nil
 }
 
 func (p *Processor) runChain(ctx context.Context, chain *chainState) error {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	chain.running.Store(true)
+	defer chain.running.Store(false)
 	// Check chain cursor during resume
 	if err := p.checkCursorOnResume(ctx, chain); err != nil {
+		if ctx.Err() != nil {
+			return nil
+		}
+		p.setChainError(chain, err)
 		return err
 	}
 
@@ -306,12 +392,10 @@ func (p *Processor) runChain(ctx context.Context, chain *chainState) error {
 		default:
 		}
 
+		before := chain.cursor.BlockNum
 		if err := p.processBatch(ctx, chain); err != nil {
-			// store err and the time it occured
-			chain.lastErr = err.Error()
-			chain.lastErrAt = time.Now()
 
-			if err == context.Canceled {
+			if ctx.Err() != nil || errors.Is(err, context.Canceled) {
 				p.logger.Info("context canceled, stopping chain processing")
 				return nil
 			}
@@ -320,14 +404,37 @@ func (p *Processor) runChain(ctx context.Context, chain *chainState) error {
 				p.logger.Info("reorg handled, continuing from ancestor block")
 				continue
 			}
+			p.setChainError(chain, err)
 			// Non-recoverable error - stop the chain
 			p.logger.Error("chain stopping due to non-recoverable error",
 				slog.String("chain_id", chain.chainInfo.ChainId),
 				slog.Any("error", err))
 			return fmt.Errorf("chain %s stopped due to error: %w", chain.chainInfo.ChainId, err)
 		}
+		p.setChainError(chain, nil)
+		if chain.cursor.BlockNum == before {
+			timer := time.NewTimer(chain.opts.PollInterval)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return nil
+			case <-timer.C:
+			}
+		}
 	}
 
+}
+
+func (p *Processor) setChainError(chain *chainState, err error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if err == nil {
+		chain.lastErr = ""
+		chain.lastErrAt = time.Time{}
+	} else {
+		chain.lastErr = err.Error()
+		chain.lastErrAt = time.Now()
+	}
 }
 
 // Function to process a batch of block for every main loop
@@ -346,7 +453,7 @@ func (p *Processor) processBatch(ctx context.Context, chain *chainState) error {
 
 	// metrics: Observe block lag
 	currentBlock := chain.cursor.BlockNum
-	target := head - chain.opts.ConfirmationDepth
+	target := head
 	if target > currentBlock {
 		lag := target - currentBlock
 		p.metrics.ObservedBlockLag(chain.chainInfo.ChainId, lag)
@@ -364,44 +471,43 @@ func (p *Processor) processBatch(ctx context.Context, chain *chainState) error {
 	// arbiter process the results in order concurrently as fetcher sends result
 	arbiterCh, arbiterErr := p.arbiter(batchCtx, chain, results, head)
 
+	// Completion and error delivery can become ready simultaneously. Always
+	// join both stages and inspect their errors before declaring success.
+	var fetchErr error
 	select {
-	// case where there is error in arbiter
 	case err := <-arbiterErr:
-
-		if errors.Is(err, coreerrors.ErrReorgDetected) {
-			var reorgErr *coreerrors.ReorgError
-			if errors.As(err, &reorgErr) {
-				p.logger.Info("reorg detected",
-					slog.Uint64("block", reorgErr.BlockNum),
-					slog.String("hash", reorgErr.BlockHash),
-				)
-			}
-		}
-
-		// Cancel the batch when there is error with arbiter
 		batchCancel()
-		// arbiter failed - still wait for fetchers to complete
 		<-fetchCh
-		// arbiter failed- wait for arbiter channel to close
 		<-arbiterCh
 		chain.progress.ResetLogWindow()
 		return err
-
-	// case where fetch done early, we will wait for arbiter
-	case <-fetchCh:
+	case fetchErr = <-fetchCh:
+		if fetchErr != nil {
+			batchCancel()
+		}
 		<-arbiterCh
-		return nil
-
+	case <-arbiterCh:
+		// An arbiter failure may leave fetchers blocked sending results.
+		select {
+		case err := <-arbiterErr:
+			batchCancel()
+			<-fetchCh
+			return err
+		default:
+		}
+		fetchErr = <-fetchCh
 	case <-batchCtx.Done():
-		// Context canceled - wait for both to complete gracefully
 		<-fetchCh
 		<-arbiterCh
 		return batchCtx.Err()
-
-	case <-arbiterCh:
-		<-fetchCh
-		return nil
 	}
+	select {
+	case err := <-arbiterErr:
+		return err
+	default:
+	}
+	return fetchErr
+
 }
 
 // Function to check cursor on resume
@@ -414,7 +520,9 @@ func (p *Processor) checkCursorOnResume(ctx context.Context, chain *chainState) 
 			var err error
 			blockNum := utils.Uint64ToHexQty(chain.cursor.BlockNum)
 
-			b, err = chain.chainInfo.RPC.GetBlock(ctx, blockNum)
+			reqCtx, reqCancel := context.WithTimeout(ctx, chain.opts.RetryConfig.PerRequestTimeout)
+			defer reqCancel()
+			b, err = chain.chainInfo.RPC.GetBlock(reqCtx, blockNum)
 			if err != nil {
 				return err
 			}
@@ -427,14 +535,16 @@ func (p *Processor) checkCursorOnResume(ctx context.Context, chain *chainState) 
 
 				ancestor, hash := p.handleReorg(ctx, chain)
 
+				rollBackCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+				defer cancel()
+				if err := p.sink.Rollback(rollBackCtx, chain.chainInfo.ChainId, ancestor+1, hash); err != nil {
+					return fmt.Errorf("rollback failed after startup reorg at block %d: %w", ancestor, err)
+				}
+				p.mu.Lock()
 				chain.cursor.BlockNum = ancestor
 				chain.cursor.BlockHash = hash
-
-				rollBackCtx, cancel := context.WithTimeout(context.Background(), 30 * time.Second)
-				defer cancel()
-				if err := p.sink.Rollback(rollBackCtx, chain.chainInfo.ChainId, ancestor, hash); err != nil {
-					p.logger.Error("failed to rollback sink", slog.String("chain_id", chain.chainInfo.ChainId), slog.Any("error", err))
-				}
+				chain.progress.Rollback(ancestor, time.Now())
+				p.mu.Unlock()
 			}
 			return nil
 		})
@@ -450,7 +560,9 @@ func (p *Processor) getBlockWithRetry(ctx context.Context, blockNum uint64, chai
 	var err error
 
 	err = rpc.RetryWithBackoff(ctx, *chain.opts.RetryConfig, func() error {
-		block, err = chain.chainInfo.RPC.GetBlock(ctx, utils.Uint64ToHexQty(blockNum))
+		reqCtx, cancel := context.WithTimeout(ctx, chain.opts.RetryConfig.PerRequestTimeout)
+		defer cancel()
+		block, err = chain.chainInfo.RPC.GetBlock(reqCtx, utils.Uint64ToHexQty(blockNum))
 		return err
 	})
 
@@ -462,7 +574,7 @@ func (p *Processor) logProgress(chain *chainState) {
 	snapshot := chain.progress.Snapshot()
 	status := "syncing"
 
-	if chain.isLive {
+	if chain.isLive.Load() {
 		status = "live"
 	}
 

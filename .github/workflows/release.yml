@@ -9,7 +9,11 @@ permissions:
   contents: write
 
 jobs:
+  checks:
+    uses: ./.github/workflows/ci.yml
+
   release:
+    needs: checks
     runs-on: ubuntu-latest
 
     steps:
@@ -22,9 +26,6 @@ jobs:
       with:
         go-version-file: go.mod
 
-    - name: Run tests
-      run: go test -race ./...
-
     - name: Create GitHub release
       uses: softprops/action-gh-release@v1
       with:
@@ -34,4 +35,4 @@ jobs:
           ## Installation
           
           go get github.com/ryuux05/godex@${{ github.ref_name }}
-                    See [CHANGELOG.md](https://github.com/ryuux05/godex/blob/${{ github.ref_name }}/CHANGELOG.md) for full release notes.
+          See [CHANGELOG.md](https://github.com/ryuux05/godex/blob/${{ github.ref_name }}/CHANGELOG.md) for full release notes.

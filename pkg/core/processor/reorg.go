@@ -2,7 +2,9 @@ package processor
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
+	"time"
 
 	coreerrors "github.com/ryuux05/godex/pkg/core/errors"
 	"github.com/ryuux05/godex/pkg/core/rpc"
@@ -13,27 +15,30 @@ import (
 // detectReorg is a function to detect reorg by comparing current block parent hash
 // with stored previous window "to" hash
 func (p *Processor) detectReorg(ctx context.Context, chain *chainState, currentBlockNum uint64, block types.Block) error {
-	parent, ok := chain.blockHashCache.Get(currentBlockNum - 1) 
+	parent, ok := chain.blockHashCache.Get(currentBlockNum - 1)
 	if ok && block.ParentHash != parent {
 		p.logger.Warn("hash mismatch, reorg detected", slog.String("chain_id", chain.chainInfo.ChainId),
-						slog.Uint64("block", currentBlockNum))
+			slog.Uint64("block", currentBlockNum))
 
 		// Metrics to measure reorgs
 		p.metrics.IncReorgs(chain.chainInfo.ChainId)
 
 		ancestor, hash := p.handleReorg(ctx, chain)
 
-		// Perform db rollback 
-		if err := p.sink.Rollback(ctx, chain.chainInfo.ChainId, ancestor, hash); err != nil {
-			p.logger.Error("failed to rollback sink", slog.String("chain_id", chain.chainInfo.ChainId), slog.Any("error", err))
+		// Perform db rollback
+		if err := p.sink.Rollback(ctx, chain.chainInfo.ChainId, ancestor+1, hash); err != nil {
+			return fmt.Errorf("rollback failed after reorg at block %d: %w", ancestor, err)
 		}
 
 		// Update the chain cursor to ancestor
+		p.mu.Lock()
 		chain.cursor.BlockHash = hash
 		chain.cursor.BlockNum = ancestor
+		chain.progress.Rollback(ancestor, time.Now())
+		p.mu.Unlock()
 
 		return &coreerrors.ReorgError{
-			BlockNum: currentBlockNum,
+			BlockNum:  currentBlockNum,
 			BlockHash: block.Hash,
 		}
 	}
@@ -72,10 +77,6 @@ func (p *Processor) handleReorg(ctx context.Context, chain *chainState) (uint64,
 			return nil
 		})
 
-		// Never return empty hash if we have a cursor hash
-		if h == "" {
-			h = chain.cursor.BlockHash
-		}
 		return fb, h
 	}
 
@@ -143,15 +144,15 @@ func (p *Processor) handleReorg(ctx context.Context, chain *chainState) (uint64,
 			return ancestor, expectedHash
 		}
 
-		// Step back by one window 
-		if ancestor < uint64(chain.opts.RangeSize) {
+		// Step back by one window
+		step := uint64(chain.opts.RangeSize)
+		if chain.isLive.Load() {
+			step = 1
+		}
+		if ancestor < step {
 			ancestor = 0
 		} else {
-			if chain.isLive {
-				ancestor -= uint64(1)
-			} else {
-				ancestor -= uint64(chain.opts.RangeSize)
-			}
+			ancestor -= step
 		}
 
 		select {
@@ -187,4 +188,3 @@ func (p *Processor) handleStartupReorg(ctx context.Context, chain *chainState) u
 	chain.blockHashCache.DropAfter(fallback)
 	return fallback
 }
-

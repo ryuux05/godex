@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/ryuux05/godex/pkg/core/errors"
@@ -13,22 +14,23 @@ import (
 	"golang.org/x/sync/errgroup"
 )
 
-func (p *Processor) fetchAll(ctx context.Context, chain *chainState, jobs <-chan BlockRange) (<-chan FetchResult, <-chan struct{}, error) {
+func (p *Processor) fetchAll(ctx context.Context, chain *chainState, jobs <-chan BlockRange) (<-chan FetchResult, <-chan error, error) {
 	results := make(chan FetchResult, chain.opts.FetcherConcurrency)
-	done := make(chan struct{})
-	g := new(errgroup.Group)
+	done := make(chan error, 1)
+	g, workerCtx := errgroup.WithContext(ctx)
 	for i := 0; i < chain.opts.FetcherConcurrency; i++ {
 		g.Go(func() error {
 			// Each fetcher gets its own context with timeout
-			fetcherCtx, cancel := context.WithCancel(ctx)
+			fetcherCtx, cancel := context.WithCancel(workerCtx)
 			defer cancel()
 			return p.fetchWorker(fetcherCtx, chain, jobs, results)
 		})
 	}
 	go func() {
 		// wait for all fetcher to exit
-		g.Wait()
+		err := g.Wait()
 		close(results)
+		done <- err
 		// wait for the done signal
 		// signaling that the fetcher is done
 		close(done)
@@ -38,7 +40,17 @@ func (p *Processor) fetchAll(ctx context.Context, chain *chainState, jobs <-chan
 }
 
 func (p *Processor) fetchWorker(ctx context.Context, chain *chainState, jobs <-chan BlockRange, results chan<- FetchResult) error {
-	for job := range jobs {
+	for {
+		var job BlockRange
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case next, ok := <-jobs:
+			if !ok {
+				return nil
+			}
+			job = next
+		}
 		// Check for context cancellation before starting fetch
 		select {
 		case <-ctx.Done():
@@ -56,7 +68,6 @@ func (p *Processor) fetchWorker(ctx context.Context, chain *chainState, jobs <-c
 		case results <- result:
 		}
 	}
-	return nil
 }
 
 func (p *Processor) fetch(ctx context.Context, chain *chainState, job BlockRange) (FetchResult, error) {
@@ -75,7 +86,7 @@ func (p *Processor) fetch(ctx context.Context, chain *chainState, job BlockRange
 	err = rpc.RetryWithBackoff(ctx, *chain.opts.RetryConfig, func() error {
 		mode := chain.opts.FetchMode
 
-		if !chain.isLive && chain.opts.UseLogsForHistoricalSync {
+		if !chain.isLive.Load() && chain.opts.UseLogsForHistoricalSync {
 			mode = FetchModeLogs
 		}
 
@@ -152,6 +163,10 @@ func (p *Processor) fetch(ctx context.Context, chain *chainState, job BlockRange
 
 func (p *Processor) fetchWithSplit(ctx context.Context, chain *chainState, job BlockRange) ([]types.Log, error) {
 	out := make([]types.Log, 0, 1024)
+	cfg := rpc.DefaultRetryConfig()
+	if chain.opts.RetryConfig != nil {
+		cfg = *chain.opts.RetryConfig
+	}
 
 	p.logger.Info("too big response occur, split request")
 	var walk func(from, to uint64) error
@@ -169,7 +184,9 @@ func (p *Processor) fetchWithSplit(ctx context.Context, chain *chainState, job B
 			Address:   chain.addresses,
 		}
 
-		l, err := chain.chainInfo.RPC.GetLogs(ctx, filter)
+		reqCtx, cancel := context.WithTimeout(ctx, cfg.PerRequestTimeout)
+		l, err := chain.chainInfo.RPC.GetLogs(reqCtx, filter)
+		cancel()
 		if err == nil {
 			out = append(out, l...)
 			return nil
@@ -215,6 +232,9 @@ func (p *Processor) fetchTimestamps(ctx context.Context, chain *chainState, logs
 	}
 
 	// Convert to slice for batch request
+	if len(uniqueBlocks) == 0 {
+		return map[uint64]uint64{}, nil
+	}
 	blockNumbers := make([]string, 0, len(uniqueBlocks))
 	for bn := range uniqueBlocks {
 		blockNumbers = append(blockNumbers, utils.Uint64ToHexQty(bn))
@@ -234,6 +254,11 @@ func (p *Processor) fetchTimestamps(ctx context.Context, chain *chainState, logs
 
 	if err != nil {
 		return nil, fmt.Errorf("failed to get timestamp blocks: %w", err)
+	}
+	for _, number := range blockNumbers {
+		if _, ok := blocks[number]; !ok {
+			return nil, fmt.Errorf("missing timestamp block %s", number)
+		}
 	}
 
 	// Process batch results
@@ -266,8 +291,8 @@ func (p *Processor) fetchLogsFromReceipts(ctx context.Context, from uint64, to u
 
 		s_blockNum := utils.Uint64ToHexQty(blockNum)
 		rpcCtx, cancel := context.WithTimeout(ctx, chain.opts.RetryConfig.PerRequestTimeout)
-		defer cancel()
 		receipts, err := chain.chainInfo.RPC.GetBlockReceipts(rpcCtx, s_blockNum)
+		cancel()
 		if err != nil {
 			return nil, fmt.Errorf("failed to get receipts for block %d: %w", blockNum, err)
 		}
@@ -289,6 +314,9 @@ func (p *Processor) fetchLogsFromReceipts(ctx context.Context, from uint64, to u
 				allLogs = append(allLogs, log)
 			}
 		}
+		if blockNum == to {
+			break
+		}
 	}
 	return allLogs, nil
 }
@@ -305,8 +333,11 @@ func (p *Processor) matchesTopicFilter(log types.Log, chain *chainState) bool {
 		return false
 	}
 
-	// Match first topic (event signature)
+	// Topic positions are ANDed; alternatives within a position are ORed.
 	for i, filterTopics := range chain.topics {
+		if i >= len(log.Topics) {
+			return false
+		}
 		// Empty filter at this position means "match any"
 		if len(filterTopics) == 0 {
 			continue
@@ -317,15 +348,17 @@ func (p *Processor) matchesTopicFilter(log types.Log, chain *chainState) bool {
 			return false
 		}
 
-		for _, topic0 := range filterTopics {
-			if len(log.Topics) > 0 {
-				logTopic := log.Topics[0]
-				if logTopic == topic0 {
-					return true
-				}
+		matched := false
+		for _, topic := range filterTopics {
+			if strings.EqualFold(log.Topics[i], topic) {
+				matched = true
+				break
 			}
+		}
+		if !matched {
+			return false
 		}
 	}
 
-	return false
+	return true
 }

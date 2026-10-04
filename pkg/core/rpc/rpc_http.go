@@ -5,14 +5,15 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"net/http"
-	"time"
-	"golang.org/x/time/rate"
 	"github.com/ryuux05/godex/pkg/core/errors"
 	"github.com/ryuux05/godex/pkg/core/types"
+	"golang.org/x/time/rate"
+	"net/http"
+	"net/url"
+	"time"
 )
 
-type HTTPRPC struct{
+type HTTPRPC struct {
 	// base HTTP URl
 	endpoint string
 	// requests-per-second
@@ -27,36 +28,70 @@ type HTTPRPC struct{
 
 // Response type for rpc
 type rpcResponse[T any] struct {
-	JSONRPC string `json:"jsonrpc"`
-	ID uint `json:"id"`
-	Result T `json:"result"`
-	Error *errors.RPCError `json:"error"`
+	JSONRPC string           `json:"jsonrpc"`
+	ID      *uint            `json:"id"`
+	Result  *T               `json:"result"`
+	Error   *errors.RPCError `json:"error"`
 }
 
 // allowed result type constrain
 type RPCResult interface {
-    string | types.Block | []types.Log | []types.Receipt
+	string | types.Block | []types.Log | []types.Receipt
 }
-
 
 // NewHTTPRPC creates an HTTP JSON-RPC client.
 // endpoint is the base RPC URL (e.g., https://...).
 // rateLimit is the maximum requests per second (0 disables limiting).
 func NewHTTPRPC(endpoint string, rateLimit uint16, burstLimit uint16) *HTTPRPC {
+	return newHTTPRPC(endpoint, HTTPRPCOptions{RateLimit: rateLimit, BurstLimit: burstLimit})
+}
+
+// HTTPRPCOptions configures the HTTP transport and rate limiter. A supplied
+// client is borrowed without modification; its lifetime belongs to the caller.
+// A nil client uses a ten-second timeout. RateLimit zero disables rate limiting.
+type HTTPRPCOptions struct {
+	Client     *http.Client
+	RateLimit  uint16
+	BurstLimit uint16
+}
+
+// NewHTTPRPCWithOptions validates the endpoint and accepts a service-owned client.
+func NewHTTPRPCWithOptions(endpoint string, opts HTTPRPCOptions) (*HTTPRPC, error) {
+	u, err := url.Parse(endpoint)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Hostname() == "" || u.Fragment != "" {
+		return nil, fmt.Errorf("RPC endpoint must be an absolute HTTP or HTTPS URL without a fragment")
+	}
+	return newHTTPRPC(endpoint, opts), nil
+}
+
+func newHTTPRPC(endpoint string, opts HTTPRPCOptions) *HTTPRPC {
+	rateLimit, burstLimit := opts.RateLimit, opts.BurstLimit
 	var lim *rate.Limiter
 	if rateLimit > 0 {
+		if burstLimit == 0 {
+			burstLimit = 1
+		}
 		lim = rate.NewLimiter(rate.Limit(rateLimit), int(burstLimit))
 	}
+	client := opts.Client
+	if client == nil {
+		client = &http.Client{Timeout: 10 * time.Second}
+	}
 	return &HTTPRPC{
-		endpoint: endpoint,
-		rateLimit: rateLimit,
+		endpoint:   endpoint,
+		rateLimit:  rateLimit,
 		burstLimit: burstLimit,
-		client: &http.Client{Timeout: 10 * time.Second},
-		limiter: lim,
+		client:     client,
+		limiter:    lim,
 	}
 }
 
-func call[T RPCResult](ctx context.Context, r *HTTPRPC, method string, params[]interface{}) (T, error) {
+// ChainID returns the eth_chainId quantity reported by the endpoint.
+func (r *HTTPRPC) ChainID(ctx context.Context) (string, error) {
+	return call[string](ctx, r, "eth_chainId", []interface{}{})
+}
+
+func call[T RPCResult](ctx context.Context, r *HTTPRPC, method string, params []interface{}) (T, error) {
 	var zero T
 
 	if r.limiter != nil {
@@ -102,13 +137,16 @@ func call[T RPCResult](ctx context.Context, r *HTTPRPC, method string, params[]i
 	}
 
 	if resp.Error != nil {
-		return zero, &errors.RPCError{
-			Code:    resp.Error.Code,
-			Message: resp.Error.Message,
-		}
+		return zero, resp.Error
 	}
 
-	return resp.Result, nil
+	if resp.ID == nil || *resp.ID != 1 {
+		return zero, fmt.Errorf("%s returned missing or mismatched response ID", method)
+	}
+	if resp.Result == nil {
+		return zero, fmt.Errorf("%s returned null or missing result", method)
+	}
+	return *resp.Result, nil
 }
 
 // callBatch is the generic batch RPC caller.
@@ -186,13 +224,31 @@ func (r *HTTPRPC) GetBlocks(ctx context.Context, blockNumbers []string) (map[str
 	}
 
 	blocks := make(map[string]types.Block, len(blockNumbers))
+	seen := make([]bool, len(blockNumbers))
 	for _, res := range responses {
-		if res.Error != nil {
-			continue
+		if res.ID == nil {
+			return nil, fmt.Errorf("batch eth_getBlockByNumber returned missing id")
 		}
-		idx := int(res.ID)
-		if idx >= 0 && idx < len(blockNumbers) {
-			blocks[blockNumbers[idx]] = res.Result
+		if *res.ID >= uint(len(blockNumbers)) {
+			return nil, fmt.Errorf("batch eth_getBlockByNumber returned invalid id %d", *res.ID)
+		}
+		idx := int(*res.ID)
+		if res.Error != nil {
+			return nil, fmt.Errorf("batch eth_getBlockByNumber failed for block %s: %w", blockNumbers[idx], res.Error)
+		}
+		if seen[idx] {
+			return nil, fmt.Errorf("batch eth_getBlockByNumber returned duplicate id %d", *res.ID)
+		}
+		seen[idx] = true
+		if res.Result == nil {
+			return nil, fmt.Errorf("batch eth_getBlockByNumber returned null or missing result for block %s", blockNumbers[idx])
+		}
+		blocks[blockNumbers[idx]] = *res.Result
+	}
+
+	for idx, ok := range seen {
+		if !ok {
+			return nil, fmt.Errorf("batch eth_getBlockByNumber missing response for block %s", blockNumbers[idx])
 		}
 	}
 

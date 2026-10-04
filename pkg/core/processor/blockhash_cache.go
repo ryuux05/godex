@@ -8,8 +8,8 @@ import (
 // Used for reorg detection by comparing parent hashes.
 type BlockHashCache struct {
 	capacity int
-	items map[uint64]*list.Element
-	order *list.List
+	items    map[uint64]*list.Element
+	order    *list.List
 }
 
 type cacheEntry struct {
@@ -20,8 +20,8 @@ type cacheEntry struct {
 func NewBlockHashCache(capacity int) *BlockHashCache {
 	return &BlockHashCache{
 		capacity: capacity,
-		items: make(map[uint64]*list.Element, capacity),
-		order: list.New(),
+		items:    make(map[uint64]*list.Element, capacity),
+		order:    list.New(),
 	}
 }
 
@@ -64,12 +64,11 @@ func (c *BlockHashCache) Get(blockNum uint64) (string, bool) {
 func (c *BlockHashCache) DropAfter(after uint64) {
 	for elem := c.order.Back(); elem != nil; {
 		entry := elem.Value.(*cacheEntry)
-		if entry.blockNum <= after {
-			break
-		}
 		prev := elem.Prev()
-		delete(c.items, entry.blockNum)
-		c.order.Remove(elem)
+		if entry.blockNum > after {
+			delete(c.items, entry.blockNum)
+			c.order.Remove(elem)
+		}
 		elem = prev
 	}
 }

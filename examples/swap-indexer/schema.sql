@@ -2,6 +2,9 @@
 CREATE TABLE IF NOT EXISTS uniswap_swaps (
     id BIGSERIAL PRIMARY KEY,
     chain_id VARCHAR(20) NOT NULL,
+    event_id TEXT NOT NULL,
+    block_hash TEXT NOT NULL,
+    log_index INT NOT NULL,
     contract_address VARCHAR(42) NOT NULL,
     tx_hash VARCHAR(66) NOT NULL,
     block_number BIGINT NOT NULL,
@@ -43,7 +46,7 @@ CREATE TABLE IF NOT EXISTS uniswap_swaps (
     created_at TIMESTAMP DEFAULT NOW(),
     
     -- Unique constraint per chain
-    UNIQUE(chain_id, tx_hash, contract_address, block_number)
+    UNIQUE(chain_id, event_id)
 );
 
 -- Add indexes
@@ -59,7 +62,7 @@ CREATE INDEX IF NOT EXISTS idx_swaps_direction ON uniswap_swaps(direction);
 -- Pools Table - tracks pool_id to token addresses mapping
 -- Uniswap V4 Pools Table
 CREATE TABLE IF NOT EXISTS uniswap_pools (
-    pool_id VARCHAR(66) PRIMARY KEY,  -- bytes32 as hex string
+    pool_id VARCHAR(66) NOT NULL,  -- bytes32 as hex string
     chain_id VARCHAR(20) NOT NULL,
     
     -- Token addresses (from Initialize event)
@@ -83,7 +86,7 @@ CREATE TABLE IF NOT EXISTS uniswap_pools (
     created_at TIMESTAMP DEFAULT NOW(),
     updated_at TIMESTAMP DEFAULT NOW(),
     
-    UNIQUE(chain_id, pool_id)
+    PRIMARY KEY(chain_id, pool_id)
 );
 
 CREATE INDEX IF NOT EXISTS idx_pools_chain ON uniswap_pools(chain_id);
@@ -130,3 +133,23 @@ CREATE INDEX IF NOT EXISTS idx_connections_swap1 ON swap_connections(swap_id_1);
 CREATE INDEX IF NOT EXISTS idx_connections_swap2 ON swap_connections(swap_id_2);
 CREATE INDEX IF NOT EXISTS idx_connections_type ON swap_connections(connection_type);
 
+
+
+-- Initialization history is retained so rollback can restore pool metadata.
+CREATE TABLE IF NOT EXISTS uniswap_pool_initializations (
+    chain_id VARCHAR(20) NOT NULL,
+    event_id TEXT NOT NULL,
+    block_number BIGINT NOT NULL,
+    block_hash TEXT NOT NULL,
+    log_index INT NOT NULL,
+    pool_id VARCHAR(66) NOT NULL,
+    token0_address VARCHAR(42) NOT NULL,
+    token1_address VARCHAR(42) NOT NULL,
+    fee_tier INTEGER NOT NULL,
+    tick_spacing INTEGER,
+    hooks_address VARCHAR(42),
+    sqrt_price_x96 TEXT,
+    tick INTEGER,
+    PRIMARY KEY(chain_id,event_id)
+);
+CREATE INDEX IF NOT EXISTS uniswap_initializations_chain_block_idx ON uniswap_pool_initializations(chain_id,block_number);

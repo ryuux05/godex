@@ -19,13 +19,16 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/ryuux05/godex/adapters/metrics"
 	"github.com/ryuux05/godex/adapters/sink/postgres"
-	"github.com/ryuux05/godex/pkg/godex"
 	"github.com/ryuux05/godex/pkg/core/decoder"
 	"github.com/ryuux05/godex/pkg/core/types"
+	"github.com/ryuux05/godex/pkg/godex"
 )
 
 //go:embed erc20_abi.json
 var erc20ABI embed.FS
+
+//go:embed schema.sql
+var applicationSchema string
 
 // ERC20Handler processes ERC20 events within the database transaction
 type ERC20Handler struct{}
@@ -52,16 +55,16 @@ func (h *ERC20Handler) handleTransfer(ctx context.Context, tx pgx.Tx, event type
 		return fmt.Errorf("invalid 'to' field type")
 	}
 	value, ok := event.Fields["value"].(*big.Int)
-	if !ok {
+	if !ok || value == nil {
 		return fmt.Errorf("invalid 'value' field type")
 	}
 	contract := event.Address
 
 	// Update transfer statistics atomically with event storage
 	_, err := tx.Exec(ctx, `
-		INSERT INTO erc20_transfer_stats (contract_address, from_address, to_address, value, block_num, tx_hash)
-		VALUES ($1, $2, $3, $4, $5, $6)
-	`, contract, from, to, value.String(), event.BlockNumber, event.TransactionHash)
+		INSERT INTO erc20_transfer_stats (contract_address, from_address, to_address, value, block_num, tx_hash,chain_id,event_id,block_hash,log_index)
+		VALUES ($1, $2, $3, $4, $5, $6,$7,$8,$9,$10) ON CONFLICT(chain_id,event_id) DO NOTHING
+	`, contract, from, to, value.String(), event.BlockNumber, event.TransactionHash, event.ChainId, event.Id, event.BlockHash, event.LogIndex)
 
 	if err != nil {
 		return fmt.Errorf("failed to store transfer stats: %w", err)
@@ -70,22 +73,22 @@ func (h *ERC20Handler) handleTransfer(ctx context.Context, tx pgx.Tx, event type
 	// Update token holder balances (simplified - real implementation would track net transfers)
 	// This ensures balance updates are atomic with the transfer event
 	_, err = tx.Exec(ctx, `
-		INSERT INTO erc20_balances (contract_address, holder_address, last_transfer_block)
-		VALUES ($1, $2, $3)
-		ON CONFLICT (contract_address, holder_address)
+		INSERT INTO erc20_balances (contract_address, holder_address, last_transfer_block,chain_id)
+		VALUES ($1, $2, $3,$4)
+		ON CONFLICT (chain_id,contract_address, holder_address)
 		DO UPDATE SET last_transfer_block = GREATEST(erc20_balances.last_transfer_block, $3)
-	`, contract, from, event.BlockNumber)
+	`, contract, from, event.BlockNumber, event.ChainId)
 
 	if err != nil {
 		return fmt.Errorf("failed to update from balance: %w", err)
 	}
 
 	_, err = tx.Exec(ctx, `
-		INSERT INTO erc20_balances (contract_address, holder_address, last_transfer_block)
-		VALUES ($1, $2, $3)
-		ON CONFLICT (contract_address, holder_address)
+		INSERT INTO erc20_balances (contract_address, holder_address, last_transfer_block,chain_id)
+		VALUES ($1, $2, $3,$4)
+		ON CONFLICT (chain_id,contract_address, holder_address)
 		DO UPDATE SET last_transfer_block = GREATEST(erc20_balances.last_transfer_block, $3)
-	`, contract, to, event.BlockNumber)
+	`, contract, to, event.BlockNumber, event.ChainId)
 
 	return err
 }
@@ -101,20 +104,25 @@ func (h *ERC20Handler) handleApproval(ctx context.Context, tx pgx.Tx, event type
 		return fmt.Errorf("invalid 'spender' field type")
 	}
 	value, ok := event.Fields["value"].(*big.Int)
-	if !ok {
+	if !ok || value == nil {
 		return fmt.Errorf("invalid 'value' field type")
 	}
 	contract := event.Address
 
 	_, err := tx.Exec(ctx, `
-		INSERT INTO erc20_approvals (contract_address, owner_address, spender_address, value, block_num, tx_hash)
-		VALUES ($1, $2, $3, $4, $5, $6)
-	`, contract, owner, spender, value.String(), event.BlockNumber, event.TransactionHash)
+		INSERT INTO erc20_approvals (contract_address, owner_address, spender_address, value, block_num, tx_hash,chain_id,event_id,block_hash,log_index)
+		VALUES ($1, $2, $3, $4, $5, $6,$7,$8,$9,$10) ON CONFLICT(chain_id,event_id) DO NOTHING
+	`, contract, owner, spender, value.String(), event.BlockNumber, event.TransactionHash, event.ChainId, event.Id, event.BlockHash, event.LogIndex)
 
 	return err
 }
 
 func main() {
+	// Setup graceful shutdown
+	ctx, cancel := signal.NotifyContext(context.Background(),
+		syscall.SIGINT, syscall.SIGTERM)
+	defer cancel()
+
 	// Setup structured logging
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
 		Level: slog.LevelInfo,
@@ -135,11 +143,11 @@ func main() {
 	rpc := godex.NewHTTPRPC(
 		rpcURL,
 		100, // requests per second
-		100,  // burst capacity
+		100, // burst capacity
 	)
 
 	// Create database connection pool
-	dbPool, err := pgxpool.New(context.Background(), databaseURL)
+	dbPool, err := pgxpool.New(ctx, databaseURL)
 	if err != nil {
 		logger.Error("failed to create database pool", slog.Any("error", err))
 		os.Exit(1)
@@ -158,12 +166,25 @@ func main() {
 		Pool:          dbPool,
 		Handler:       handler,
 		CopyThreshold: 32,
-		Metrics:       prometheusMetrics,
 	}
 
-	sink, err := postgres.NewSink(sinkConfig)
+	sinkCtx, stopSink := context.WithTimeout(ctx, 10*time.Second)
+	sink, err := postgres.NewSinkContext(sinkCtx, sinkConfig)
+	stopSink()
 	if err != nil {
 		logger.Error("failed to create sink", slog.Any("error", err))
+		os.Exit(1)
+	}
+
+	rebuild := os.Getenv("REBUILD_PROJECTIONS") == "1"
+	setupCtx := ctx
+	if !rebuild {
+		var stopSetup context.CancelFunc
+		setupCtx, stopSetup = context.WithTimeout(ctx, 30*time.Second)
+		defer stopSetup()
+	}
+	if err := prepareApplication(setupCtx, dbPool, handler, rebuild); err != nil {
+		logger.Error("failed to prepare application schema", slog.Any("error", err))
 		os.Exit(1)
 	}
 
@@ -185,23 +206,23 @@ func main() {
 	// Configure indexing options
 	opts := &godex.Options{
 		RangeSize:          150, // blocks per batch
-		FetcherConcurrency: 10,    // concurrent fetchers
+		FetcherConcurrency: 10,  // concurrent fetchers
 		StartBlock:         startBlock,
-		ConfirmationDepth:  0,   // wait for confirmations
+		ConfirmationDepth:  0,    // wait for confirmations
 		EnableTimestamps:   true, // include block timestamps
 		Topics: [][]string{
 			{"0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef", // Transfer(address,address,uint256)
-			"0x8c5be1e5ebec7d5bd14f71427d1e84f3dd0314c0f7b2291e5b200ac8c7c3b925", // Approval(address,address,uint256)
-			}, 
+				"0x8c5be1e5ebec7d5bd14f71427d1e84f3dd0314c0f7b2291e5b200ac8c7c3b925", // Approval(address,address,uint256)
+			},
 		},
 		FetchMode:                godex.FetchModeReceipts,
 		UseLogsForHistoricalSync: true,
 		RetryConfig: &godex.RetryConfig{
-			MaxAttempts:    50,             // Increase from 3
-			InitialBackoff: 5 * time.Second,
-			MaxBackoff:     60 * time.Second, // Increase from 30s
-			Multiplier:     2.0,
-			EnableJitter:   true,
+			MaxAttempts:       50, // Increase from 3
+			InitialBackoff:    5 * time.Second,
+			MaxBackoff:        60 * time.Second, // Increase from 30s
+			Multiplier:        2.0,
+			EnableJitter:      true,
 			PerRequestTimeout: 10 * time.Second,
 		},
 	}
@@ -232,18 +253,13 @@ func main() {
 		slog.Int("fetcher_concurrency", opts.FetcherConcurrency),
 	)
 
-	// Setup graceful shutdown
-	ctx, cancel := signal.NotifyContext(context.Background(),
-		syscall.SIGINT, syscall.SIGTERM)
-	defer cancel()
-
 	go func() {
-        http.Handle("/metrics", promhttp.Handler())
-        logger.Info("metrics server starting", slog.String("addr", ":9090"))
-        if err := http.ListenAndServe(":9090", nil); err != nil {
-            logger.Error("metrics server failed", slog.Any("error", err))
-        }
-    }()
+		http.Handle("/metrics", promhttp.Handler())
+		logger.Info("metrics server starting", slog.String("addr", ":9090"))
+		if err := http.ListenAndServe(":9090", nil); err != nil {
+			logger.Error("metrics server failed", slog.Any("error", err))
+		}
+	}()
 
 	// Start indexing - events automatically decoded and stored
 	err = processor.Run(ctx)
