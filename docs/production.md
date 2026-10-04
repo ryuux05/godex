@@ -44,9 +44,36 @@ func (h *Handler) Rollback(ctx context.Context, tx pgx.Tx,
 ```
 
 Handlers that implement only `Handle` remain compatible; the sink cannot undo
-their application data automatically. The existing ERC20 and swap example
-handlers still need application-specific rollback implementations before their
-derived tables can be relied on after a reorg.
+their application data automatically. Both example handlers implement rollback:
+ERC20 removes orphaned transfer/approval history and rebuilds holder recency;
+Uniswap removes orphaned swaps and initialization history, rebuilds statistics
+and pool metadata, and removes connections involving deleted swaps. Other
+chains' history and aggregates remain intact. The ERC20 `erc20_balances` table
+tracks last-transfer heights; it does not calculate token balance amounts.
+
+### Upgrading existing example databases
+
+Fresh databases initialize the application schema automatically. Existing example
+schemas lack the event provenance needed for rollback and require an explicit
+rebuild. Stop the indexer, then start the updated example once with
+`REBUILD_PROJECTIONS=1`. After successful preparation, remove the flag for later
+starts. With Docker Compose, set it in the example's `.env` for that startup,
+then remove it and recreate the indexer service.
+
+The rebuild recreates only the example's application tables and replays its
+stored `chronicle_events` in bounded pages, restoring exact integers and bytes.
+It preserves internal events and indexing cursors. Schema changes and replay
+commit together; a failed replay restores the previous application tables.
+Rebuilding may take a long time for large histories and observes shutdown
+signals. Normal application schema preparation has a 30-second deadline.
+
+Application row IDs and creation timestamps can change. External foreign-key
+references cause the reset to fail rather than cascade into unrelated tables.
+The stored events must contain the complete history to reconstruct; a rebuild
+cannot recover events that were never stored or have been removed. The flag
+rebuilds application data for every chain in that example's schema. Reorg
+rollback also scans surviving history to restore aggregates; measure that cost
+before using these examples for large production datasets.
 
 Keep effects inside the supplied `pgx.Tx`. HTTP calls, messages, and other external
 effects are outside its rollback guarantee. Persist an outbox row in the same
@@ -56,9 +83,8 @@ errors for expected failures.
 
 ## Startup, shutdown, and resource limits
 
-- Run one active indexer per chain and database namespace. Concurrent duplicate
-  inserts are deduplicated, but cursor ownership and competing reorgs are not
-  protected by a distributed lease or fencing token.
+- The supported design has one active indexer per chain and database namespace.
+  Stop the existing process before starting its replacement.
 - `AddChainContext` validates configuration before loading a cursor and bounds
   cursor loading by `RetryConfig.PerRequestTimeout`. `NewSink` bounds schema
   initialization to ten seconds; `NewSinkContext` accepts a caller-owned budget.
@@ -117,5 +143,5 @@ transaction and recovery behavior; hosted workflows still need to pass on the
 actual pull request and release tag.
 
 Further work is tracked in [repository-review.md](repository-review.md), including
-distributed ownership, provider consistency during a changing window, and
-application-specific example recovery.
+provider consistency during a changing window, event identity across networks,
+and recovery performance for large histories.

@@ -72,8 +72,8 @@ calls from another package's tests do not inflate these package figures.
 ## Production hardening pass
 
 The production pass adds 29 test functions with table-driven cases and addresses
-persistence and execution contracts beyond statement coverage. Final SDK and
-adapter statement coverage is 92.3% (examples remain untested):
+persistence and execution contracts beyond statement coverage. At that stage SDK and
+adapter statement coverage was 92.3%:
 
 - Conflict-safe COPY staging now matches INSERT replay behavior. Only new IDs
   invoke database handlers, including concurrent replay and threshold transitions.
@@ -102,16 +102,35 @@ adapter statement coverage is 92.3% (examples remain untested):
 - A real PostgreSQL integration test covers sparse-window persistence, live reorg,
   projection rollback, replacement branch indexing, cancellation, and restart.
 
+## Example recovery follow-up
+
+Ten database test functions now cover both application handlers. Both implement
+transactional rollback with chain/event/block provenance. Tests cover inclusive
+boundaries, replacement branch replay under INSERT and COPY, preservation of
+other chains, failed rollback and failed writes, and rebuilding legacy schemas
+without resetting cursors. The ERC20 rebuild fixture spans multiple pages and
+preserves 256-bit integer precision; Uniswap fixtures restore bytes32 pool IDs.
+
+Swap identity now distinguishes separate logs in one transaction, and pool
+identity includes the chain. Cross-chain connection writes no longer reuse a
+busy database connection or ignore failures, and early timestamps no longer
+underflow the five-minute matching window. Both examples use processor metrics
+without attaching the same collector to the sink.
+
+Legacy application schemas require an explicit `REBUILD_PROJECTIONS=1` startup.
+The rebuild is transactional, recreates derived tables from stored events, and
+preserves indexing progress. Operational details and limits are in
+[production.md](production.md#upgrading-existing-example-databases).
+
 ## Remaining priorities
 
 These are concrete boundaries of this pass, with deployment guidance in
-[production.md](production.md).
+[production.md](production.md). The supported design has one indexer per chain;
+distributed ownership is outside that design.
 
 | Priority | Finding | Next work |
 | --- | --- | --- |
-| High | Multiple processes can race cursor ownership and canonical rollback; insert deduplication does not provide distributed fencing. | Add a per-chain lease with fencing and recovery tests involving competing owners. Until then run one writer per chain/namespace. |
-| High | ERC20 and swap example handlers write projections without `RollbackHandler`. Their schemas/aggregates need explicit reversal rules. | Add chain/block provenance, implement transactional rollback, and test each example against canonical and orphaned fixture history. |
-| High | Log fetch and header reads can observe different canonical views when a provider reorganizes during a window. | Add provider-switch/mixed-history fixtures and define full-window hash consistency checks before commit. Confirmation depth reduces exposure but does not prove consistency. |
+| High | Log fetch and header reads can observe different canonical views when a provider reorganizes during a window. | First test reorgs between the full-window log response and the later ending-header request; receipts and split windows involve additional calls. Use the results to decide whether extra consistency checks are needed. Confirmation depth reduces exposure. |
 | Medium | Global event IDs can collide across networks sharing the same block/transaction hashes; existing IDs lack chain namespace. | Design a migration for chain-scoped identity and existing handler references. Use separate schemas or chain-namespaced custom IDs for affected deployments. |
 | Medium | Arrays, tuples, anonymous events, and fixed byte sizes other than bytes32 are unsupported and now rejected explicitly. | Add ABI conformance fixtures and implement supported extensions with a defined compatibility contract. |
 | Medium | PostgreSQL's replay-safe COPY now stages rows and merges them, adding per-batch work. | Benchmark INSERT/COPY crossover with realistic payload sizes and replay proportions before tuning the threshold. |
@@ -136,3 +155,9 @@ CI/release YAML passed duplicate-key and gate-configuration checks. The log
 decoder fuzz target ran for five seconds with 781,768 executions and no failure.
 Hosted workflows have not been run locally. The disposable database was removed
 after validation.
+
+For the example recovery follow-up, the full race suite passed against
+PostgreSQL 16. Package statement coverage is 28.9% for ERC20 and 53.2% for
+Uniswap; application entry points remain untested. Shared projection rebuild
+logic is exercised through these integration tests but is not instrumented by
+Go's default package-local coverage. Build and vet passed.

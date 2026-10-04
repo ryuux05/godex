@@ -38,7 +38,7 @@ Wait until `pg_isready` reports that PostgreSQL is accepting connections. Each
 integration test creates and drops its own schema; the configured database user
 must be allowed to create schemas. Test cleanup truncates only tables in those
 test schemas. Pools and schemas are cleaned up through `t.Cleanup`, including on
-assertion failures.
+assertion failures. Sink and example tests share `internal/testutil.Postgres`.
 
 The integration suite covers INSERT and COPY, handler transaction failures,
 rollback boundaries, chain isolation, cursor upserts, missing cursors, failed
@@ -51,6 +51,14 @@ handler rollback, conflicting cursor hashes, and repeated schema initialization.
 The processor/PostgreSQL recovery test indexes a sparse window, changes canonical
 history during live indexing, checks both event and projection rollback, and
 restarts from the full persisted window cursor.
+
+The ERC20 and Uniswap handler integration tests run through the real PostgreSQL
+sink under INSERT and COPY. They check canonical/orphaned histories, inclusive
+rollback, aggregate restoration, cross-chain preservation, replay deduplication,
+failed writes and rollback, multiple logs from one transaction, and pool IDs
+shared across chains. Legacy rebuild tests verify atomic schema replacement,
+paged replay, exact large integers, bytes32 IDs, and unchanged indexing cursors.
+`make test-postgres` includes these example tests.
 
 ## Fuzz tests
 

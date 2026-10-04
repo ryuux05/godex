@@ -2,9 +2,9 @@ package postgres
 
 import (
 	"context"
-	"fmt"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/ryuux05/godex/internal/testutil"
 	"github.com/ryuux05/godex/pkg/core/types"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -16,38 +16,7 @@ import (
 
 // Each integration test owns a schema. No caller database tables are truncated.
 // An explicitly configured but unavailable database is a failure, including CI.
-func getTestDB(t *testing.T) *pgxpool.Pool {
-	t.Helper()
-	dsn := os.Getenv("POSTGRES_TEST_DSN")
-	if dsn == "" {
-		t.Skip("set POSTGRES_TEST_DSN to run PostgreSQL integration tests")
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	cfg, err := pgxpool.ParseConfig(dsn)
-	require.NoError(t, err)
-	admin, err := pgxpool.NewWithConfig(ctx, cfg)
-	require.NoError(t, err)
-	t.Cleanup(admin.Close)
-	require.NoError(t, admin.Ping(ctx), "configured PostgreSQL test database must be available")
-
-	schema := fmt.Sprintf("godex_test_%d", time.Now().UnixNano())
-	identifier := pgx.Identifier{schema}.Sanitize()
-	_, err = admin.Exec(ctx, "CREATE SCHEMA "+identifier)
-	require.NoError(t, err)
-	t.Cleanup(func() {
-		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cleanupCancel()
-		_, err := admin.Exec(cleanupCtx, "DROP SCHEMA "+identifier+" CASCADE")
-		assert.NoError(t, err)
-	})
-	cfg = cfg.Copy()
-	cfg.ConnConfig.RuntimeParams["search_path"] = schema
-	pool, err := pgxpool.NewWithConfig(ctx, cfg)
-	require.NoError(t, err)
-	t.Cleanup(pool.Close)
-	return pool
-}
+func getTestDB(t *testing.T) *pgxpool.Pool { t.Helper(); return testutil.Postgres(t) }
 
 // cleanupTestDB cleans up test data
 func cleanupTestDB(t *testing.T, pool *pgxpool.Pool) {

@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"embed"
+	"errors"
 	"fmt"
 	"log/slog"
 	"math/big"
@@ -26,6 +27,9 @@ import (
 
 //go:embed uniswap_abi.json
 var uniswapABI embed.FS
+
+//go:embed schema.sql
+var applicationSchema string
 
 // UniswapHandler processes Uniswap swap events within the database transaction
 type UniswapHandler struct {
@@ -72,13 +76,13 @@ func (h *UniswapHandler) handleSwap(ctx context.Context, tx pgx.Tx, event types.
 	}
 
 	// Extract amounts (int128)
-	if a0, ok := event.Fields["amount0"].(*big.Int); ok {
+	if a0, ok := event.Fields["amount0"].(*big.Int); ok && a0 != nil {
 		amount0 = a0
 	} else {
 		return fmt.Errorf("invalid 'amount0' field type: %T", event.Fields["amount0"])
 	}
 
-	if a1, ok := event.Fields["amount1"].(*big.Int); ok {
+	if a1, ok := event.Fields["amount1"].(*big.Int); ok && a1 != nil {
 		amount1 = a1
 	} else {
 		return fmt.Errorf("invalid 'amount1' field type: %T", event.Fields["amount1"])
@@ -154,9 +158,9 @@ func (h *UniswapHandler) handleSwap(ctx context.Context, tx pgx.Tx, event types.
 			amount0_abs, amount1_abs,
 			direction,
 			sqrt_price_x96, price, liquidity, tick,
-			amount0_in, amount1_in, amount0_out, amount1_out
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24)
-		ON CONFLICT (chain_id, tx_hash, contract_address, block_number) DO NOTHING
+			amount0_in, amount1_in, amount0_out, amount1_out,event_id,block_hash,log_index,token0_address,token1_address
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24,$25,$26,$27,$28,$29)
+		ON CONFLICT (chain_id, event_id) DO NOTHING
 		RETURNING id
 	`,
 		chainId, contract, txHash, blockNum, timestamp, blockTimestamp,
@@ -167,10 +171,11 @@ func (h *UniswapHandler) handleSwap(ctx context.Context, tx pgx.Tx, event types.
 		direction,
 		nullBigInt(sqrtPriceX96), nil, nullBigInt(liquidity), nullInt(tick), // price is computed, set to NULL for now
 		nil, nil, nil, nil, // V2/V3 fields
+		event.Id, event.BlockHash, event.LogIndex, nullString(token0Address), nullString(token1Address),
 	).Scan(&swapID)
 
 	if err != nil {
-		if err.Error() == "no rows in result set" {
+		if errors.Is(err, pgx.ErrNoRows) {
 			return nil
 		}
 		return fmt.Errorf("failed to store swap: %w", err)
@@ -198,8 +203,7 @@ func (h *UniswapHandler) handleSwap(ctx context.Context, tx pgx.Tx, event types.
 	// Connect related swaps
 	err = h.connectSwaps(ctx, tx, swapID, chainId, sender, sender, timestamp)
 	if err != nil {
-		h.logger.Warn("failed to connect swaps", slog.Any("error", err))
-		return nil
+		return fmt.Errorf("connect swaps: %w", err)
 	}
 
 	return nil
@@ -264,26 +268,18 @@ func (h *UniswapHandler) handleInitialize(ctx context.Context, tx pgx.Tx, event 
 	chainId := event.ChainId
 	blockNum := event.BlockNumber
 
-	// Store or update pool in database
-	_, err := tx.Exec(ctx, `
-		INSERT INTO uniswap_pools (
-			pool_id, chain_id, token0_address, token1_address, fee_tier, tick_spacing,
-			hooks_address, sqrt_price_x96, tick,
-			first_seen_block, last_seen_block
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $10)
-		ON CONFLICT (pool_id) 
-		DO UPDATE SET
-			last_seen_block = GREATEST(uniswap_pools.last_seen_block, $10),
-			updated_at = NOW()
-	`,
-		poolID, chainId, currency0, currency1,
-		nullInt(fee), nullInt(tickSpacing),
-		nullString(hooks), nullBigInt(sqrtPriceX96), nullInt(tick),
-		blockNum,
-	)
-
+	tag, err := tx.Exec(ctx, `INSERT INTO uniswap_pool_initializations
+ (chain_id,event_id,block_number,block_hash,log_index,pool_id,token0_address,token1_address,fee_tier,tick_spacing,hooks_address,sqrt_price_x96,tick)
+ VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) ON CONFLICT(chain_id,event_id) DO NOTHING`,
+		chainId, event.Id, blockNum, event.BlockHash, event.LogIndex, poolID, currency0, currency1, nullInt(fee), nullInt(tickSpacing), nullString(hooks), nullBigInt(sqrtPriceX96), nullInt(tick))
 	if err != nil {
-		return fmt.Errorf("failed to store pool: %w", err)
+		return fmt.Errorf("store pool initialization: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return nil
+	}
+	if err := rebuildPools(ctx, tx, chainId, &poolID); err != nil {
+		return err
 	}
 
 	h.logger.Info("pool initialized",
@@ -313,92 +309,20 @@ func nullInt(b *big.Int) *int {
 }
 
 // connectSwaps finds and connects related swaps across chains
-func (h *UniswapHandler) connectSwaps(ctx context.Context, tx pgx.Tx, swapID int64, chainId, sender, recipient string, timestamp uint64) error {
-	// Find related swaps in the last 5 minutes (cross-chain arbitrage window)
-	timeWindow := timestamp - 300 // 5 minutes in seconds
-
-	// Find swaps with same sender on different chain (cross-chain activity)
-	rows, err := tx.Query(ctx, `
-		SELECT id, chain_id, timestamp
-		FROM uniswap_swaps
-		WHERE sender = $1 
-			AND chain_id != $2
-			AND timestamp >= $3
-			AND timestamp <= $4
-			AND id != $5
-		ORDER BY ABS(timestamp - $4)
-		LIMIT 10
-	`, sender, chainId, timeWindow, timestamp, swapID)
-	if err != nil {
-		return err
+func (h *UniswapHandler) connectSwaps(ctx context.Context, tx pgx.Tx, swapID int64, chainID, sender, recipient string, timestamp uint64) error {
+	var from uint64
+	if timestamp > 300 {
+		from = timestamp - 300
 	}
-	defer rows.Close()
-
-	for rows.Next() {
-		var relatedID int64
-		var relatedChainId string
-		var relatedTimestamp uint64
-		if err := rows.Scan(&relatedID, &relatedChainId, &relatedTimestamp); err != nil {
-			continue
-		}
-
-		timeDiff := int64(timestamp) - int64(relatedTimestamp)
-		if timeDiff < 0 {
-			timeDiff = -timeDiff
-		}
-
-		// Insert connection
-		_, err = tx.Exec(ctx, `
-			INSERT INTO swap_connections (swap_id_1, swap_id_2, connection_type, time_diff_seconds)
-			VALUES ($1, $2, 'cross_chain_sender', $3)
-			ON CONFLICT (swap_id_1, swap_id_2) DO NOTHING
-		`, swapID, relatedID, timeDiff)
-		if err != nil {
-			continue
+	for _, match := range []struct{ column, value, kind string }{{"sender", sender, "cross_chain_sender"}, {"recipient", recipient, "cross_chain_recipient"}} {
+		query := fmt.Sprintf(`INSERT INTO swap_connections(swap_id_1,swap_id_2,connection_type,time_diff_seconds)
+   SELECT $1,id,$2,ABS(timestamp-$6::bigint) FROM uniswap_swaps
+   WHERE %s=$3 AND chain_id!=$4 AND timestamp >=$5 AND timestamp <=$6 AND id!=$1
+   ORDER BY ABS(timestamp-$6::bigint),id LIMIT 10 ON CONFLICT(swap_id_1,swap_id_2) DO NOTHING`, match.column)
+		if _, err := tx.Exec(ctx, query, swapID, match.kind, match.value, chainID, from, timestamp); err != nil {
+			return err
 		}
 	}
-
-	// Find swaps with same recipient on different chain
-	rows, err = tx.Query(ctx, `
-		SELECT id, chain_id, timestamp
-		FROM uniswap_swaps
-		WHERE recipient = $1 
-			AND chain_id != $2
-			AND timestamp >= $3
-			AND timestamp <= $4
-			AND id != $5
-		ORDER BY ABS(timestamp - $4)
-		LIMIT 10
-	`, recipient, chainId, timeWindow, timestamp, swapID)
-	if err != nil {
-		return err
-	}
-	defer rows.Close()
-
-	for rows.Next() {
-		var relatedID int64
-		var relatedChainId string
-		var relatedTimestamp uint64
-		if err := rows.Scan(&relatedID, &relatedChainId, &relatedTimestamp); err != nil {
-			continue
-		}
-
-		timeDiff := int64(timestamp) - int64(relatedTimestamp)
-		if timeDiff < 0 {
-			timeDiff = -timeDiff
-		}
-
-		// Insert connection
-		_, err = tx.Exec(ctx, `
-			INSERT INTO swap_connections (swap_id_1, swap_id_2, connection_type, time_diff_seconds)
-			VALUES ($1, $2, 'cross_chain_recipient', $3)
-			ON CONFLICT (swap_id_1, swap_id_2) DO NOTHING
-		`, swapID, relatedID, timeDiff)
-		if err != nil {
-			continue
-		}
-	}
-
 	return nil
 }
 
@@ -419,6 +343,11 @@ func absBigInt(b *big.Int) *big.Int {
 }
 
 func main() {
+	// Setup graceful shutdown
+	ctx, cancel := signal.NotifyContext(context.Background(),
+		syscall.SIGINT, syscall.SIGTERM)
+	defer cancel()
+
 	// Setup structured logging
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
 		Level: slog.LevelInfo,
@@ -449,7 +378,7 @@ func main() {
 	)
 
 	// Create database connection pool
-	dbPool, err := pgxpool.New(context.Background(), databaseURL)
+	dbPool, err := pgxpool.New(ctx, databaseURL)
 	if err != nil {
 		logger.Error("failed to create database pool", slog.Any("error", err))
 		os.Exit(1)
@@ -469,12 +398,25 @@ func main() {
 		Pool:          dbPool,
 		Handler:       handler,
 		CopyThreshold: 32,
-		Metrics:       prometheusMetrics,
 	}
 
-	sink, err := postgres.NewSink(sinkConfig)
+	sinkCtx, stopSink := context.WithTimeout(ctx, 10*time.Second)
+	sink, err := postgres.NewSinkContext(sinkCtx, sinkConfig)
+	stopSink()
 	if err != nil {
 		logger.Error("failed to create sink", slog.Any("error", err))
+		os.Exit(1)
+	}
+
+	rebuild := os.Getenv("REBUILD_PROJECTIONS") == "1"
+	setupCtx := ctx
+	if !rebuild {
+		var stopSetup context.CancelFunc
+		setupCtx, stopSetup = context.WithTimeout(ctx, 30*time.Second)
+		defer stopSetup()
+	}
+	if err := prepareApplication(setupCtx, dbPool, handler, rebuild); err != nil {
+		logger.Error("failed to prepare application schema", slog.Any("error", err))
 		os.Exit(1)
 	}
 
@@ -594,11 +536,6 @@ func main() {
 		slog.Int("fetcher_concurrency", ethOpts.FetcherConcurrency),
 		slog.String("v4_topic_hash", "0x77b638a85d8def4f2c541d550b973ab09afd8bcce6bc0c26084c58c05ca379e9"),
 	)
-
-	// Setup graceful shutdown
-	ctx, cancel := signal.NotifyContext(context.Background(),
-		syscall.SIGINT, syscall.SIGTERM)
-	defer cancel()
 
 	go func() {
 		http.Handle("/metrics", promhttp.Handler())

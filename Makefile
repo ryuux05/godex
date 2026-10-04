@@ -20,7 +20,7 @@ test-race:
 
 test-postgres:
 	@test -n "$$POSTGRES_TEST_DSN" || (echo "Set POSTGRES_TEST_DSN to an isolated test database"; exit 1)
-	go test -count=1 -timeout=2m -v ./adapters/sink/postgres
+	go test -count=1 -timeout=2m -v ./adapters/sink/postgres ./examples/...
 
 fmt:
 	go fmt $(PKG)
