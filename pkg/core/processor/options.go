@@ -24,7 +24,8 @@ type Options struct {
 	// SkipDecodeErrors explicitly permits advancing past logs that fail decoding.
 	// Default false: stop without committing the affected window.
 	SkipDecodeErrors bool
-	// BatchSize controls how many decoded events are buffered and written to sinks at once.
+	// Deprecated: BatchSize has no effect. Writes commit complete block windows;
+	// use RangeSize to control window size and the sink's COPY threshold for writes.
 	BatchSize int
 	// RangeSize is the number of blocks requested per eth_getLogs window.
 	// Larger ranges reduce round-trips but may exceed provider limits; tune per provider.
@@ -71,6 +72,23 @@ type Options struct {
 	// Use pointer since it nillable
 	// There is default settings
 	RetryConfig *rpc.RetryConfig
+}
+
+// DefaultOptions returns an independent set of starting defaults. Confirmation
+// depth remains zero; choose it explicitly for the network being indexed.
+func DefaultOptions() Options {
+	retry := rpc.DefaultRetryConfig()
+	return Options{
+		RangeSize: 1000, FetcherConcurrency: 4, PollInterval: time.Second,
+		MaxInFlightRanges: 8, ReorgLookbackBlocks: 64, FetchMode: FetchModeLogs,
+		UseLogsForHistoricalSync: true, RetryConfig: &retry,
+	}
+}
+
+// Validate checks options without accessing RPC or persistence.
+func (opts Options) Validate() error {
+	_, err := normalizeOptions(&opts)
+	return err
 }
 
 func normalizeOptions(opts *Options) (*Options, error) {

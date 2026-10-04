@@ -21,7 +21,8 @@ go get github.com/ryuux05/godex
 
 ### Basic Setup
 
-Set `DATABASE_URL` and `RPC_URL`, then run:
+Set `DATABASE_URL`, `RPC_URL`, and `CONTRACT_ADDRESS`. This example stores
+selected decoded events in PostgreSQL and resumes stored progress:
 
 ```go
 package main
@@ -33,50 +34,44 @@ import (
     "os/signal"
     "syscall"
 
-    "github.com/jackc/pgx/v5"
     "github.com/jackc/pgx/v5/pgxpool"
-    "github.com/ryuux05/godex/adapters/sink/postgres"
-    "github.com/ryuux05/godex/pkg/core/decoder"
     "github.com/ryuux05/godex/pkg/godex"
 )
-
-// This example stores decoded events in chronicle_events. For application
-// tables, implement Handle and the transactional RollbackHandler hook.
-type EventHandler struct{}
-func (EventHandler) Handle(context.Context, pgx.Tx, godex.Event) error { return nil }
 
 const erc20ABI = `[{"type":"event","name":"Transfer","inputs":[{"name":"from","type":"address","indexed":true},{"name":"to","type":"address","indexed":true},{"name":"value","type":"uint256"}]}]`
 
 func main() {
     ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
     defer cancel()
-
     pool, err := pgxpool.New(ctx, os.Getenv("DATABASE_URL"))
     if err != nil { log.Fatal(err) }
     defer pool.Close()
-    sink, err := postgres.NewSinkContext(ctx, postgres.SinkConfig{Pool: pool, Handler: EventHandler{}})
-    if err != nil { log.Fatal(err) }
 
-    dec := decoder.NewStandardDecoder()
-    if err := dec.RegisterABI("ERC20", erc20ABI); err != nil { log.Fatal(err) }
-    topic := "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"
-    router := decoder.NewDecoderRouter().Register(decoder.ByTopic0(topic), "ERC20", dec)
-
-    p := godex.NewProcessor(nil, sink)
-    opts := &godex.Options{
-        RangeSize: 1000,
-        FetcherConcurrency: 4,
-        StartBlock: 17_999_999, // First indexed block: 18,000,000.
+    indexer, err := godex.New(ctx, godex.Config{
+        ChainID: "1",
+        RPCURL: os.Getenv("RPC_URL"),
+        Postgres: &godex.PostgresConfig{Pool: pool},
+        Contracts: []godex.Contract{{
+            Address: os.Getenv("CONTRACT_ADDRESS"), ABI: erc20ABI,
+            Events: []string{"Transfer"},
+        }},
+        FromBlock: 18_000_000, // First indexed block in a fresh database.
         ConfirmationDepth: 12,
-        Topics: [][]string{{topic}},
-    }
-    if err := p.AddChainContext(ctx, godex.ChainInfo{
-        ChainId: "1", Name: "Ethereum",
-        RPC: godex.NewHTTPRPC(os.Getenv("RPC_URL"), 20, 5),
-    }, opts, router); err != nil { log.Fatal(err) }
-    if err := p.Run(ctx); err != nil { log.Fatal(err) }
+    })
+    if err != nil { log.Fatal(err) }
+    if err := indexer.Run(ctx); err != nil { log.Fatal(err) }
 }
 ```
+
+`New` derives topic filters and decoder routes from the ABI, checks the RPC chain
+ID before storage access, and applies documented tuning defaults. Supplied pools
+and HTTP clients remain caller-owned. Use an existing `Sink` instead of
+`Postgres` when integrating another backend.
+
+For function handlers, transactional rollback, safe event accessors, custom HTTP
+clients, and tuning, see the [service integration guide](docs/sdk.md). A runnable
+example is available with `go run ./examples/service`. The lower-level
+`NewProcessor` and `AddChainContext` APIs remain available.
 
 ## Configuration
 
@@ -444,11 +439,13 @@ http.Handle("/metrics", promhttp.Handler())
 
 ## Examples
 
+- [Service Integration](examples/service/) - Configuration-driven SDK integration
 - [ERC20 Indexer](examples/erc20-indexer/) - Complete example with PostgreSQL storage
 - See [examples/](examples/) directory for more examples
 
 ## Documentation
 
+- [Service Integration Guide](docs/sdk.md) - Simple setup, borrowed resources, and handler functions
 - [Architecture Overview](docs/architecture.md) - System architecture and design principles
 - [Processor Guide](docs/processor.md) - Processor configuration and behavior
 - [Decoder Guide](docs/decoder.md) - Event decoding and routing

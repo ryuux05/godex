@@ -122,6 +122,29 @@ The rebuild is transactional, recreates derived tables from stored events, and
 preserves indexing progress. Operational details and limits are in
 [production.md](production.md#upgrading-existing-example-databases).
 
+## SDK usability and service integration
+
+The SDK follow-up adds `godex.New(ctx, Config)` for single-chain setup from
+contract addresses, ABIs and selected events. It derives routes and RPC filters,
+verifies chain identity before accessing storage, resumes persisted progress,
+and names the first indexed height explicitly with `FromBlock`. Existing
+lower-level APIs and the base RPC interface remain compatible.
+
+Service integrations can borrow their HTTP client and PostgreSQL pool, use paired
+handler functions for transactional event writes and rollback, and read event
+fields with strict accessors that preserve integer precision and reject overflow.
+`DefaultOptions` and local validation expose configuration defaults, while the
+unused `BatchSize` option is explicitly deprecated.
+
+Sixteen test functions cover the new API and helpers, including configuration
+mistakes before I/O, overloads, routing/filter snapshots, startup identity and
+cancellation, inclusive starting heights, pool ownership, and PostgreSQL
+INSERT/COPY restart/reorg recovery. The full race suite passed against PostgreSQL
+16; build and vet passed. The README quick start compiled as an independent Go
+module. Public SDK package coverage is 95.4%; event types/accessors are 96.9%.
+The runnable service entry point is built but not runtime-tested against a live
+blockchain. See [sdk.md](sdk.md) for configuration and ownership contracts.
+
 ## Remaining priorities
 
 These are concrete boundaries of this pass, with deployment guidance in

@@ -9,6 +9,7 @@ import (
 	"github.com/ryuux05/godex/pkg/core/types"
 	"golang.org/x/time/rate"
 	"net/http"
+	"net/url"
 	"time"
 )
 
@@ -42,6 +43,29 @@ type RPCResult interface {
 // endpoint is the base RPC URL (e.g., https://...).
 // rateLimit is the maximum requests per second (0 disables limiting).
 func NewHTTPRPC(endpoint string, rateLimit uint16, burstLimit uint16) *HTTPRPC {
+	return newHTTPRPC(endpoint, HTTPRPCOptions{RateLimit: rateLimit, BurstLimit: burstLimit})
+}
+
+// HTTPRPCOptions configures the HTTP transport and rate limiter. A supplied
+// client is borrowed without modification; its lifetime belongs to the caller.
+// A nil client uses a ten-second timeout. RateLimit zero disables rate limiting.
+type HTTPRPCOptions struct {
+	Client     *http.Client
+	RateLimit  uint16
+	BurstLimit uint16
+}
+
+// NewHTTPRPCWithOptions validates the endpoint and accepts a service-owned client.
+func NewHTTPRPCWithOptions(endpoint string, opts HTTPRPCOptions) (*HTTPRPC, error) {
+	u, err := url.Parse(endpoint)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Hostname() == "" || u.Fragment != "" {
+		return nil, fmt.Errorf("RPC endpoint must be an absolute HTTP or HTTPS URL without a fragment")
+	}
+	return newHTTPRPC(endpoint, opts), nil
+}
+
+func newHTTPRPC(endpoint string, opts HTTPRPCOptions) *HTTPRPC {
+	rateLimit, burstLimit := opts.RateLimit, opts.BurstLimit
 	var lim *rate.Limiter
 	if rateLimit > 0 {
 		if burstLimit == 0 {
@@ -49,13 +73,22 @@ func NewHTTPRPC(endpoint string, rateLimit uint16, burstLimit uint16) *HTTPRPC {
 		}
 		lim = rate.NewLimiter(rate.Limit(rateLimit), int(burstLimit))
 	}
+	client := opts.Client
+	if client == nil {
+		client = &http.Client{Timeout: 10 * time.Second}
+	}
 	return &HTTPRPC{
 		endpoint:   endpoint,
 		rateLimit:  rateLimit,
 		burstLimit: burstLimit,
-		client:     &http.Client{Timeout: 10 * time.Second},
+		client:     client,
 		limiter:    lim,
 	}
+}
+
+// ChainID returns the eth_chainId quantity reported by the endpoint.
+func (r *HTTPRPC) ChainID(ctx context.Context) (string, error) {
+	return call[string](ctx, r, "eth_chainId", []interface{}{})
 }
 
 func call[T RPCResult](ctx context.Context, r *HTTPRPC, method string, params []interface{}) (T, error) {

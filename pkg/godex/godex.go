@@ -1,47 +1,13 @@
-// Package godex is the public API for the Godex blockchain indexing SDK.
+// Package godex provides the public API for EVM event indexing.
 //
-// It intentionally exposes a small, stable surface:
-// - Processor engine (multi-chain orchestration)
-// - RPC client + retry configuration
-// - Sink + Metrics interfaces
-// - Core types and common errors
+// New assembles a single-chain indexer from Config, deriving event filters and
+// decoder routes from contract ABIs. It supports caller-owned sinks, PostgreSQL
+// pools, HTTP clients, loggers and metrics. FromBlock is the first block to index,
+// inclusively; zero resumes progress or starts at block 1 without a cursor.
 //
-// Advanced/unstable internals (decoder router details, match helpers, etc.) remain
-// available via subpackages (e.g. pkg/core/decoder) without being part of the
-// top-level compatibility contract.
-//
-// Quick Start:
-//
-//	import (
-//	    "context"
-//	    "github.com/ryuux05/godex/pkg/godex"
-//	    "github.com/ryuux05/godex/pkg/core/decoder"
-//	)
-//
-//	func main() {
-//	    ctx := context.Background()
-//
-//	    rpc := godex.NewHTTPRPC("https://...", 20, 5)
-//
-//	    sink := /* your sink */
-//	    m := godex.NoopMetrics{}
-//
-//	    p := godex.NewProcessor(m, sink)
-//
-//	    opts := &godex.Options{
-//	        RangeSize:          1000,
-//	        FetcherConcurrency: 4,
-//	        StartBlock:         18_000_000,
-//	        ConfirmationDepth:  12,
-//	        Topics: [][]string{{"0xddf252ad..."}}, // topic0 OR-list
-//	    }
-//
-//	    router := decoder.NewDecoderRouter()
-//	    // router.Register(...)
-//
-//	    p.AddChain(godex.ChainInfo{ChainId: "1", Name: "Ethereum", RPC: rpc}, opts, router)
-//	    _ = p.Run(ctx)
-//	}
+// NewProcessor and AddChainContext expose the lower-level API for custom routing
+// and multi-chain orchestration. Run one active indexer per chain and namespace.
+// See docs/sdk.md and examples/service for complete integrations.
 package godex
 
 import (
@@ -80,6 +46,8 @@ func NewProcessor(m Metrics, s Sink) *Processor {
 
 type RPC = rpc.RPC
 type HTTPRPC = rpc.HTTPRPC
+type HTTPRPCOptions = rpc.HTTPRPCOptions
+type ChainIDRPC = rpc.ChainIDRPC
 type RetryConfig = rpc.RetryConfig
 
 // NewHTTPRPC creates a new rate-limited HTTP RPC client for blockchain interactions.
@@ -87,6 +55,17 @@ type RetryConfig = rpc.RetryConfig
 // applies RetryConfig; direct RPC calls do not retry automatically.
 func NewHTTPRPC(endpoint string, rateLimit uint16, burstLimit uint16) *HTTPRPC {
 	return rpc.NewHTTPRPC(endpoint, rateLimit, burstLimit)
+}
+
+// NewHTTPRPCWithOptions validates an endpoint and borrows a service HTTP client.
+func NewHTTPRPCWithOptions(endpoint string, opts HTTPRPCOptions) (*HTTPRPC, error) {
+	return rpc.NewHTTPRPCWithOptions(endpoint, opts)
+}
+
+// DefaultOptions returns independent tuning defaults. Choose confirmation depth
+// explicitly for your chain; it defaults to zero.
+func DefaultOptions() Options {
+	return processor.DefaultOptions()
 }
 
 // DefaultRetryConfig returns the default retry configuration with sensible
@@ -128,6 +107,7 @@ type ReorgError = coreerrors.ReorgError
 
 var ErrCursorNotFound = coreerrors.ErrCursorNotFound
 var ErrReorgDetected = coreerrors.ErrReorgDetected
+var ErrFieldNotFound = types.ErrFieldNotFound
 
 // IsRetryableError determines if an error should trigger a retry attempt.
 // Returns true for transient errors like network timeouts, rate limits, or

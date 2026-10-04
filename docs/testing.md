@@ -60,6 +60,14 @@ shared across chains. Legacy rebuild tests verify atomic schema replacement,
 paged replay, exact large integers, bytes32 IDs, and unchanged indexing cursors.
 `make test-postgres` includes these example tests.
 
+The configuration API tests use the public package to verify ABI-derived filters,
+contract-specific routing, event selectors and overloads, configuration snapshots,
+first-block/resume semantics, preflight chain identity, startup cancellation, and
+service HTTP client injection. Real PostgreSQL tests cover borrowed pools,
+function handlers, sparse windows, restart, and replacement-branch rollback under
+both INSERT and COPY. Field accessor tests check exact integers, overflow,
+missing fields, and independent copies.
+
 ## Fuzz tests
 
 Seed inputs run with the normal test suite. To explore beyond them:

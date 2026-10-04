@@ -59,6 +59,11 @@ func NewSinkContext(ctx context.Context, cfg SinkConfig) (*PGSink, error) {
 	if nilComponent(cfg.Handler) {
 		return nil, fmt.Errorf("handler is required")
 	}
+	if validator, ok := cfg.Handler.(interface{ Validate() error }); ok {
+		if err := validator.Validate(); err != nil {
+			return nil, fmt.Errorf("handler: %w", err)
+		}
+	}
 
 	m := cfg.Metrics
 	if nilComponent(m) {

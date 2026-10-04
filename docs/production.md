@@ -81,6 +81,15 @@ transaction and deliver it using an idempotent consumer when those effects are
 needed. A panic releases the transaction, but application code should return
 errors for expected failures.
 
+## SDK service integration
+
+`godex.New(ctx, Config)` offers ABI-derived setup and startup chain verification.
+Its `FromBlock` setting is the first indexed height, inclusively; the lower-level
+`Options.StartBlock` remains a cursor height. Pools and HTTP clients stay
+caller-owned. Paired `postgres.HandlerFuncs` implement transactional event writes
+and rollback, while event field accessors reject overflow and lossy numeric types.
+See [sdk.md](sdk.md) for defaults, lifecycle, custom clients and integration examples.
+
 ## Startup, shutdown, and resource limits
 
 - The supported design has one active indexer per chain and database namespace.
