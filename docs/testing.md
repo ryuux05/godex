@@ -60,6 +60,13 @@ shared across chains. Legacy rebuild tests verify atomic schema replacement,
 paged replay, exact large integers, bytes32 IDs, and unchanged indexing cursors.
 `make test-postgres` includes these example tests.
 
+The delegation tracker tests decode Votes ABI logs into the real PostgreSQL sink
+under INSERT and COPY. They cover delegation changes, transfer-driven voting
+power, exact integers, same-block ordering, replay, inclusive rollback,
+replacement history, chain and contract isolation, and atomic failures. A local
+HTTP RPC fixture runs the service entry point through indexing, cancellation,
+and restart with a persisted cursor.
+
 The configuration API tests use the public package to verify ABI-derived filters,
 contract-specific routing, event selectors and overloads, configuration snapshots,
 first-block/resume semantics, preflight chain identity, startup cancellation, and

@@ -1,0 +1,22 @@
+[
+	{
+		"type": "event",
+		"name": "DelegateChanged",
+		"anonymous": false,
+		"inputs": [
+			{"name": "delegator", "type": "address", "indexed": true},
+			{"name": "fromDelegate", "type": "address", "indexed": true},
+			{"name": "toDelegate", "type": "address", "indexed": true}
+		]
+	},
+	{
+		"type": "event",
+		"name": "DelegateVotesChanged",
+		"anonymous": false,
+		"inputs": [
+			{"name": "delegate", "type": "address", "indexed": true},
+			{"name": "previousVotes", "type": "uint256", "indexed": false},
+			{"name": "newVotes", "type": "uint256", "indexed": false}
+		]
+	}
+]

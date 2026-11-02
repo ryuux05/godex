@@ -441,7 +441,9 @@ http.Handle("/metrics", promhttp.Handler())
 
 - [Service Integration](examples/service/) - Configuration-driven SDK integration
 - [ERC20 Indexer](examples/erc20-indexer/) - Complete example with PostgreSQL storage
-- See [examples/](examples/) directory for more examples
+- [Swap Indexer](examples/swap-indexer/) - Uniswap pool and swap activity across chains
+- [Delegation Tracker](examples/delegation-tracker/) - Governance delegates, voting-power rankings, and history with reorg recovery
+- See the [examples guide](examples/README.md) for run commands and use cases
 
 ## Documentation
 
