@@ -444,6 +444,7 @@ http.Handle("/metrics", promhttp.Handler())
 - [Swap Indexer](examples/swap-indexer/) - Uniswap pool and swap activity across chains
 - [Delegation Tracker](examples/delegation-tracker/) - Governance delegates, voting-power rankings, and history with reorg recovery
 - [NFT Indexer](examples/nft-indexer/) - ERC721 owners, wallet inventories, holder rankings, and mint/burn history
+- [Payment Reconciler](examples/payment-reconciler/) - Stablecoin checkout invoices, partial payments, overpayments, and reorg recovery
 - See the [examples guide](examples/README.md) for run commands and use cases
 
 ## Documentation

@@ -73,6 +73,14 @@ historical ownership, replay, inclusive rollback, replacement history, chain and
 collection isolation, and atomic failures under INSERT and COPY. Its local HTTP
 RPC fixture exercises service startup, indexing, cancellation, and cursor resume.
 
+The payment reconciler tests exact invoice totals, partial and excess payments,
+acceptance blocks, chain/token/recipient isolation, ignored transfers, idempotent
+invoice creation, address reuse rejection, replay, rollback, and atomic failures.
+Its local HTTP fixture runs the checkout commands, registers an invoice while
+the watcher runs, checks recipient filtering, and resumes the durable cursor.
+Recipient batch tests check ordering, empty filters, malformed responses, and
+failure after a prior batch succeeded.
+
 The configuration API tests use the public package to verify ABI-derived filters,
 contract-specific routing, event selectors and overloads, configuration snapshots,
 first-block/resume semantics, preflight chain identity, startup cancellation, and
