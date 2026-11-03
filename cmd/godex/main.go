@@ -8,6 +8,8 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
+	"unicode"
 
 	"github.com/ryuux05/godex/pkg/codegen"
 )
@@ -21,7 +23,7 @@ func main() {
 
 func run(args []string, stdout, stderr io.Writer) error {
 	if len(args) == 0 || args[0] == "-h" || args[0] == "--help" {
-		_, err := fmt.Fprintln(stdout, "Usage: godex generate -abi FILE -type NAME [-package NAME] [-out FILE] [-event NAME_OR_SIGNATURE ...]")
+		_, err := fmt.Fprintln(stdout, "Usage: godex generate -abi FILE [-type NAME] [-package NAME] [-out FILE] [-event NAME_OR_SIGNATURE ...]")
 		return err
 	}
 	if args[0] != "generate" {
@@ -31,7 +33,7 @@ func run(args []string, stdout, stderr io.Writer) error {
 	flags.SetOutput(stderr)
 	abiPath := flags.String("abi", "", "JSON ABI or compiler artifact file")
 	packageName := flags.String("package", "generated", "Go package name for the generated file")
-	typeName := flags.String("type", "", "exported contract prefix, such as ERC20")
+	typeName := flags.String("type", "", "exported contract prefix (default: derived from ABI filename)")
 	outputPath := flags.String("out", "generated.go", "generated Go file, or - for stdout")
 	var events []string
 	flags.Func("event", "select an event name or canonical signature; may be repeated", func(value string) error {
@@ -44,12 +46,15 @@ func run(args []string, stdout, stderr io.Writer) error {
 		}
 		return err
 	}
-	if *abiPath == "" || *typeName == "" || flags.NArg() != 0 {
-		return fmt.Errorf("generate requires -abi and -type, with no positional arguments")
+	if *abiPath == "" || flags.NArg() != 0 {
+		return fmt.Errorf("generate requires -abi, with no positional arguments")
 	}
 	data, err := os.ReadFile(*abiPath)
 	if err != nil {
 		return fmt.Errorf("read ABI: %w", err)
+	}
+	if *typeName == "" {
+		*typeName = defaultTypeName(*abiPath)
 	}
 	source, err := codegen.Generate(data, codegen.Config{Package: *packageName, Type: *typeName, Events: events})
 	if err != nil {
@@ -64,6 +69,30 @@ func run(args []string, stdout, stderr io.Writer) error {
 	}
 	_, err = fmt.Fprintf(stderr, "generated %s\n", *outputPath)
 	return err
+}
+
+func defaultTypeName(abiPath string) string {
+	name := filepath.Base(abiPath)
+	name = strings.TrimSuffix(name, filepath.Ext(name))
+	parts := strings.FieldsFunc(name, func(r rune) bool {
+		return !unicode.IsLetter(r) && !unicode.IsDigit(r)
+	})
+	if len(parts) > 1 && strings.EqualFold(parts[len(parts)-1], "abi") {
+		parts = parts[:len(parts)-1]
+	}
+	if len(parts) == 0 {
+		return "Contract"
+	}
+	for i, part := range parts {
+		runes := []rune(part)
+		runes[0] = unicode.ToUpper(runes[0])
+		parts[i] = string(runes)
+	}
+	name = strings.Join(parts, "")
+	if !unicode.IsUpper([]rune(name)[0]) {
+		name = "Contract" + name
+	}
+	return name
 }
 
 func writeGenerated(path string, source []byte) error {

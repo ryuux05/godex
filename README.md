@@ -76,12 +76,13 @@ example is available with `go run ./examples/service`. The lower-level
 Generate typed event structs and PostgreSQL callbacks from your ABI:
 
 ```sh
-go run ./cmd/godex generate -abi examples/erc20-indexer/erc20_abi.json \
-  -package token -type ERC20 -event Transfer -out bindings/token/erc20_gen.go
+go run ./cmd/godex generate -abi examples/erc20-indexer/erc20_abi.json
 ```
 
-Use `token.ERC20Handlers.OnTransfer` to receive `token.ERC20Transfer` with typed
-`From`, `To`, and `Value` fields. See [typed handler generation](docs/codegen.md)
+This writes `generated.go` with package `generated` and a type prefix inferred
+from the ABI filename. Use `generated.Erc20Handlers.OnTransfer` to receive
+`generated.Erc20Transfer` with typed `From`, `To`, and `Value` fields. Override the
+defaults with `-package`, `-type`, and `-out`. See [typed handler generation](docs/codegen.md)
 and the [payment reconciler](examples/payment-reconciler/) for a working integration.
 
 ## Configuration

@@ -9,12 +9,15 @@ while retaining the original event metadata separately.
 From the repository root:
 
 ```sh
-go run ./cmd/godex generate -abi examples/erc20-indexer/erc20_abi.json -type ERC20
+go run ./cmd/godex generate -abi examples/erc20-indexer/erc20_abi.json
 ```
 
 This writes `generated.go` in the current directory with package `generated`.
-Only `-abi` and `-type` are required. Override the package and output path when
-generating into your application's existing packages:
+Only `-abi` is required. The type prefix comes from the filename: `token.json`
+becomes `Token`, and `erc20_abi.json` becomes `Erc20`. Separators are removed,
+words are capitalized, and a trailing `abi` word is dropped. Use `-type` to choose
+a specific prefix. Override the defaults when generating into your application's
+existing packages:
 
 ```sh
 go run ./cmd/godex generate \
@@ -27,8 +30,8 @@ go run ./cmd/godex generate \
 
 Change `-abi` and `-out` to use your own ABI and destination. The input can be a
 JSON ABI array or a compiler artifact with an `abi` array. `-package` names the
-Go package. `-type` prefixes exported identifiers so several contracts can share
-a package without their Transfer types colliding.
+Go package. `-type` overrides the inferred prefix for exported identifiers so
+several contracts can share a package without their Transfer types colliding.
 
 Omit `-event` to generate all events. Repeat it to select several:
 
