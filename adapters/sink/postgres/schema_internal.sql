@@ -16,9 +16,9 @@ CREATE TABLE IF NOT EXISTS chronicle_events (
   payload       JSONB NOT NULL
 );
 
-CREATE INDEX ON chronicle_events (chain_id, block_num);
-CREATE INDEX ON chronicle_events (chain_id, kind, block_num);
-CREATE INDEX ON chronicle_events (chain_id, address, block_num);
+CREATE INDEX IF NOT EXISTS chronicle_events_chain_id_block_num_idx ON chronicle_events (chain_id, block_num);
+CREATE INDEX IF NOT EXISTS chronicle_events_chain_id_kind_block_num_idx ON chronicle_events (chain_id, kind, block_num);
+CREATE INDEX IF NOT EXISTS chronicle_events_chain_id_address_block_num_idx ON chronicle_events (chain_id, address, block_num);
 
 CREATE TABLE IF NOT EXISTS chronicle_cursors (
   chain_id   TEXT NOT NULL,

@@ -1,0 +1,19 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: godex
+      POSTGRES_PASSWORD: godex-example
+      POSTGRES_DB: delegation
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT:-55440}:5432"
+    volumes:
+      - delegation_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U godex -d delegation"]
+      interval: 2s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  delegation_data:

@@ -2,44 +2,26 @@ package postgres
 
 import (
 	"context"
-	"os"
-	"testing"
-	"time"
-	"strconv"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/ryuux05/godex/internal/testutil"
 	"github.com/ryuux05/godex/pkg/core/types"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"os"
+	"strconv"
+	"testing"
+	"time"
 )
 
-// getTestDB creates a test database connection
-// Set POSTGRES_TEST_DSN environment variable or use default
-func getTestDB(t *testing.T) *pgxpool.Pool {
-	dsn := os.Getenv("POSTGRES_TEST_DSN")
-	if dsn == "" {
-		dsn = "postgres://postgres:dev@localhost:5432/postgres?sslmode=disable"
-	}
-
-	pool, err := pgxpool.New(context.Background(), dsn)
-	if err != nil {
-		t.Skipf("Skipping test: unable to connect to test database: %v", err)
-		return nil
-	}
-
-	// Test connection
-	if err := pool.Ping(context.Background()); err != nil {
-		t.Skipf("Skipping test: unable to ping test database: %v", err)
-		return nil
-	}
-
-	return pool
-}
+// Each integration test owns a schema. No caller database tables are truncated.
+// An explicitly configured but unavailable database is a failure, including CI.
+func getTestDB(t *testing.T) *pgxpool.Pool { t.Helper(); return testutil.Postgres(t) }
 
 // cleanupTestDB cleans up test data
 func cleanupTestDB(t *testing.T, pool *pgxpool.Pool) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-    defer cancel()
+	defer cancel()
 
 	_, err := pool.Exec(ctx, `
 		TRUNCATE TABLE chronicle_events CASCADE;
@@ -91,7 +73,7 @@ func TestNewSink(t *testing.T) {
 			Handler: handler,
 		})
 		assert.Error(t, err)
-		assert.Contains(t, err.Error(), "Pool is required")
+		assert.Contains(t, err.Error(), "pool is required")
 	})
 
 	t.Run("missing handler", func(t *testing.T) {
@@ -100,7 +82,7 @@ func TestNewSink(t *testing.T) {
 			Handler: nil,
 		})
 		assert.Error(t, err)
-		assert.Contains(t, err.Error(), "Handler is required")
+		assert.Contains(t, err.Error(), "handler is required")
 	})
 
 	t.Run("default copy threshold", func(t *testing.T) {
@@ -375,8 +357,8 @@ func TestLoadCursor(t *testing.T) {
 
 	handler := &mockHandler{}
 	sink, err := NewSink(SinkConfig{
-		Pool: pool,
-		Handler: handler,
+		Pool:          pool,
+		Handler:       handler,
 		CopyThreshold: 100,
 	})
 

@@ -255,7 +255,7 @@ func TestDecode_StructureMismatch(t *testing.T) {
 
 	event, err := decoder.Decode("erc20", "1", log)
 
-	assert.NoError(t, err)
+	assert.Error(t, err)
 	assert.Nil(t, event) // Structure doesn't match
 }
 
@@ -389,7 +389,7 @@ func TestDecode_DataTooShort(t *testing.T) {
 
 	event, err := decoder.Decode("erc20", "1", log)
 
-	assert.NoError(t, err)
+	assert.Error(t, err)
 	assert.Nil(t, event)
 }
 
@@ -411,7 +411,6 @@ func TestDecode_MissingIndexedParameter(t *testing.T) {
 
 	event, err := decoder.Decode("erc20", "1", log)
 
-	assert.NoError(t, err)
+	assert.Error(t, err)
 	assert.Nil(t, event)
 }
-

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"math"
 	"math/rand"
 	"time"
 
@@ -32,13 +33,28 @@ type RetryConfig struct {
 	PerRequestTimeout time.Duration
 }
 
+// Validate checks retry arithmetic. PerRequestTimeout is consumed by callers;
+// zero is allowed for standalone retry callbacks that do not make RPC requests.
+func (c RetryConfig) Validate() error {
+	if c.MaxAttempts <= 0 {
+		return fmt.Errorf("MaxAttempts must be positive")
+	}
+	if c.InitialBackoff < 0 || c.MaxBackoff < 0 || c.PerRequestTimeout < 0 {
+		return fmt.Errorf("retry durations cannot be negative")
+	}
+	if c.MaxAttempts > 1 && (c.Multiplier < 1 || math.IsNaN(c.Multiplier) || math.IsInf(c.Multiplier, 0)) {
+		return fmt.Errorf("Multiplier must be finite and at least 1")
+	}
+	return nil
+}
+
 func DefaultRetryConfig() RetryConfig {
 	return RetryConfig{
-		MaxAttempts:    3,
-		InitialBackoff: 1 * time.Second,
-		MaxBackoff:     30 * time.Second,
-		Multiplier:     2.0,
-		EnableJitter:   true,
+		MaxAttempts:       3,
+		InitialBackoff:    1 * time.Second,
+		MaxBackoff:        30 * time.Second,
+		Multiplier:        2.0,
+		EnableJitter:      true,
 		PerRequestTimeout: 10 * time.Second,
 	}
 }
@@ -55,10 +71,22 @@ func DefaultRetryConfig() RetryConfig {
 //	    return err
 //	})
 func RetryWithBackoff(ctx context.Context, config RetryConfig, fn func() error) error {
+	if err := config.Validate(); err != nil {
+		return err
+	}
+	if fn == nil {
+		return fmt.Errorf("retry callback is required")
+	}
 	var lastErr error
 	backoff := config.InitialBackoff
+	if backoff > config.MaxBackoff {
+		backoff = config.MaxBackoff
+	}
 
 	for attempt := 0; attempt < config.MaxAttempts; attempt++ {
+		if err := ctx.Err(); err != nil {
+			return fmt.Errorf("retry cancelled: %w", err)
+		}
 		// Execute function
 		lastErr = fn()
 
@@ -82,9 +110,13 @@ func RetryWithBackoff(ctx context.Context, config RetryConfig, fn func() error) 
 
 		// Calculate wait time with exponential backoff and jitter
 		wait := backoff
-		if config.EnableJitter {
+		if config.EnableJitter && backoff/4 > 0 {
 			jitter := time.Duration(rand.Int63n(int64(backoff / 4)))
-			wait = backoff + jitter
+			if jitter > config.MaxBackoff-backoff {
+				wait = config.MaxBackoff
+			} else {
+				wait = backoff + jitter
+			}
 		}
 
 		slog.Warn("retry attempt failed",
@@ -97,9 +129,11 @@ func RetryWithBackoff(ctx context.Context, config RetryConfig, fn func() error) 
 		// Wait for context cancellation and backoff
 		select {
 		case <-time.After(wait):
-			backoff = time.Duration(float64(backoff) * config.Multiplier)
-			if backoff > config.MaxBackoff {
+			next := float64(backoff) * config.Multiplier
+			if next >= float64(config.MaxBackoff) {
 				backoff = config.MaxBackoff
+			} else {
+				backoff = time.Duration(next)
 			}
 		case <-ctx.Done():
 			return fmt.Errorf("retry cancelled: %w", ctx.Err())

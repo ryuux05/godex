@@ -69,7 +69,7 @@ For development, you may want to run the indexer locally while keeping PostgreSQ
 
 ### 1. Prerequisites
 
-- Go 1.21 or later
+- Go 1.24.7 or later
 - Docker and Docker Compose
 - Ethereum RPC endpoint (Alchemy, Infura, or local node)
 
@@ -78,7 +78,7 @@ For development, you may want to run the indexer locally while keeping PostgreSQ
 ```bash
 export RPC_URL="https://eth-mainnet.g.alchemy.com/v2/YOUR_API_KEY"
 export DATABASE_URL="postgres://godex:password@localhost:5432/godex?sslmode=disable"
-export START_BLOCK=18000000  # Optional: default is 18M
+export START_BLOCK=18000000  # Optional: indexing begins at START_BLOCK + 1
 ```
 
 ### 3. Start PostgreSQL Only
@@ -91,17 +91,14 @@ Wait for PostgreSQL to be ready (healthcheck will verify).
 
 ### 4. Initialize Database Schema
 
-The sink automatically creates internal tables. For custom handler tables:
-
-```bash
-psql postgres://godex:password@localhost:5432/godex -f schema.sql
-```
+The example initializes both internal and application tables at startup. No
+manual schema step is needed for a fresh database.
 
 ### 5. Run Indexer Locally
 
 ```bash
 cd examples/erc20-indexer
-go run main.go
+go run .
 ```
 
 ## What It Does
@@ -114,7 +111,7 @@ go run main.go
    - Stores transfer statistics
    - Tracks token holder activity
    - Records approval events
-6. **Handles** reorgs by rolling back orphaned events
+6. **Handles** reorgs by removing orphaned events and approvals and restoring holder activity from surviving transfers in the same transaction
 7. **Exports** metrics for monitoring
 
 ## Database Schema
@@ -124,11 +121,11 @@ go run main.go
 - `chronicle_events`: All decoded events
 - `chronicle_cursors`: Processing progress per chain
 
-### Custom Tables (Created by Handler)
+### Application Tables (Initialized at Startup)
 
 - `erc20_transfer_stats`: Transfer event statistics
 - `erc20_approvals`: Approval event records
-- `erc20_balances`: Token holder activity tracking
+- `erc20_balances`: Last-transfer height per chain, contract, and holder; this is activity tracking, not token balance amounts
 
 ## Handler Pattern
 
@@ -145,7 +142,7 @@ COMMIT;
 **Benefits:**
 - **Atomicity**: All operations succeed or fail together
 - **Consistency**: No orphaned data
-- **Performance**: Single database round-trip
+- **Replay safety**: Previously stored event IDs do not rerun handler writes
 
 ## Monitoring
 
@@ -172,23 +169,23 @@ Structured JSON logs include:
 ### Indexing Options
 
 ```go
-opts := &core.Options{
+opts := &godex.Options{
     RangeSize:          1000,     // Blocks per batch
     FetcherConcurrency: 4,        // Concurrent workers
     StartBlock:         18000000,
     ConfirmationDepth:  12,       // Wait for confirmations
     EnableTimestamps:   true,     // Include block timestamps
-    Topics: []string{
-        "0xddf252ad...", // Transfer
-        "0x8c5be1e5...", // Approval
-    },
+    Topics: [][]string{{
+        "0xddf252ad...", // Transfer (use the complete topic hash)
+        "0x8c5be1e5...", // Approval (use the complete topic hash)
+    }},
 }
 ```
 
 ### RPC Configuration
 
 ```go
-rpc := core.NewHTTPRPC(
+rpc := godex.NewHTTPRPC(
     "https://eth-mainnet.g.alchemy.com/v2/YOUR_KEY",
     20, // requests per second
     5,  // burst capacity
@@ -201,9 +198,10 @@ rpc := core.NewHTTPRPC(
 
 ```
 examples/erc20-indexer/
-├── Dockerfile           # Multi-stage build for indexer
+├── dockerfile           # Multi-stage build for indexer
 ├── docker-compose.yml   # PostgreSQL + Indexer services
 ├── main.go              # Indexer application
+├── rollback.go          # Transactional application recovery
 ├── erc20_abi.json       # ERC20 event definitions
 ├── schema.sql           # Custom handler tables
 └── README.md            # This file
@@ -228,7 +226,7 @@ services:
 
 ```bash
 # From repository root
-docker build -t godex-erc20-indexer -f examples/erc20-indexer/Dockerfile .
+docker build -t godex-erc20-indexer -f examples/erc20-indexer/dockerfile .
 ```
 
 ## Querying Data
@@ -264,11 +262,11 @@ ORDER BY last_transfer_block DESC;
 
 ```sql
 SELECT 
-    event_type,
+    kind,
     address as contract,
-    block_number,
-    transaction_hash,
-    fields
+    block_num,
+    tx_hash,
+    payload
 FROM chronicle_events
 WHERE chain_id = '1'
   AND event_type IN ('Transfer', 'Approval')
@@ -276,11 +274,25 @@ ORDER BY block_number DESC
 LIMIT 100;
 ```
 
+## Upgrading an Existing Database
+
+Older application tables lack the provenance required for rollback. Stop the
+indexer, then start the updated example once with `REBUILD_PROJECTIONS=1`.
+This recreates application tables from stored `chronicle_events` while preserving
+internal events and cursors. Schema replacement and replay are atomic. Remove
+the flag after successful preparation so later restarts resume normally.
+
+With Docker Compose, add the flag to `.env` for that startup, then remove it and
+recreate the indexer service. Keep the PostgreSQL volume. The rebuild requires
+complete retained event history; application row IDs and creation timestamps
+can change. See [production operation](../../docs/production.md#upgrading-existing-example-databases)
+for recovery limits and large-history costs.
+
 ## Stopping
 
 Send SIGINT (Ctrl+C) for graceful shutdown. The indexer will:
-- Complete current batch processing
-- Update cursor position
+- Cancel outstanding work
+- Keep the last successfully committed window cursor
 - Close database connections
 - Exit cleanly
 

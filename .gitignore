@@ -28,6 +28,10 @@ go.work.sum
 .env
 
 cmd/main.go
+
+# graphify knowledge graph output
+graphify-out/
+
 # Editor/IDE
 # .idea/
 # .vscode/

@@ -74,3 +74,21 @@ func TestClear(t *testing.T) {
 	assert.False(t, e)
 	assert.Equal(t, "", v)
 }
+
+func TestDropAfterIgnoresLRUOrder(t *testing.T) {
+	cache := NewBlockHashCache(4)
+	cache.Set(1, "one")
+	cache.Set(2, "two")
+	cache.Set(3, "three")
+	cache.Get(1) // Access order differs from height order.
+	cache.Set(2, "updated")
+	cache.DropAfter(1)
+	assert.Equal(t, 1, cache.Len())
+	for _, n := range []uint64{2, 3} {
+		_, ok := cache.Get(n)
+		assert.False(t, ok, "orphaned height %d must be removed", n)
+	}
+	h, ok := cache.Get(1)
+	assert.True(t, ok)
+	assert.Equal(t, "one", h)
+}

@@ -37,8 +37,6 @@ docs/
 *.md
 !examples/erc20-indexer/README.md
 
-# Test files
-*_test.go
 
 # Examples (except this one)
 examples/*
