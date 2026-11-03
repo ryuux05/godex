@@ -2,6 +2,8 @@ package main
 
 import (
 	"bytes"
+	"go/parser"
+	"go/token"
 	"os"
 	"path/filepath"
 	"testing"
@@ -12,6 +14,32 @@ import (
 )
 
 const testABI = `[{"type":"event","name":"Transfer","inputs":[{"name":"value","type":"uint256"}]}]`
+
+func TestGenerateCommandDefaultsAndOverrides(t *testing.T) {
+	for _, tc := range []struct {
+		name, output, pkg string
+		flags             []string
+	}{
+		{"defaults", "generated.go", "generated", nil},
+		{"package override", "generated.go", "token", []string{"-package", "token"}},
+		{"output override", "generated/events.go", "generated", []string{"-out", "generated/events.go"}},
+		{"both overrides", "generated/events.go", "token", []string{"-package", "token", "-out", "generated/events.go"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Chdir(t.TempDir())
+			require.NoError(t, os.WriteFile("abi.json", []byte(testABI), 0644))
+			args := append([]string{"generate", "-abi", "abi.json", "-type", "ERC20"}, tc.flags...)
+			var stdout, stderr bytes.Buffer
+			require.NoError(t, run(args, &stdout, &stderr))
+			source, err := os.ReadFile(tc.output)
+			require.NoError(t, err)
+			file, err := parser.ParseFile(token.NewFileSet(), tc.output, source, parser.AllErrors)
+			require.NoError(t, err)
+			assert.Equal(t, tc.pkg, file.Name.Name)
+			assert.Empty(t, stdout.String())
+		})
+	}
+}
 
 func TestGenerateCommandWritesAndRegenerates(t *testing.T) {
 	dir := t.TempDir()

@@ -9,6 +9,14 @@ while retaining the original event metadata separately.
 From the repository root:
 
 ```sh
+go run ./cmd/godex generate -abi examples/erc20-indexer/erc20_abi.json -type ERC20
+```
+
+This writes `generated.go` in the current directory with package `generated`.
+Only `-abi` and `-type` are required. Override the package and output path when
+generating into your application's existing packages:
+
+```sh
 go run ./cmd/godex generate \
   -abi examples/erc20-indexer/erc20_abi.json \
   -package token \

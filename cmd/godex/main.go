@@ -21,7 +21,7 @@ func main() {
 
 func run(args []string, stdout, stderr io.Writer) error {
 	if len(args) == 0 || args[0] == "-h" || args[0] == "--help" {
-		_, err := fmt.Fprintln(stdout, "Usage: godex generate -abi FILE -package NAME -type NAME -out FILE [-event NAME_OR_SIGNATURE ...]")
+		_, err := fmt.Fprintln(stdout, "Usage: godex generate -abi FILE -type NAME [-package NAME] [-out FILE] [-event NAME_OR_SIGNATURE ...]")
 		return err
 	}
 	if args[0] != "generate" {
@@ -30,9 +30,9 @@ func run(args []string, stdout, stderr io.Writer) error {
 	flags := flag.NewFlagSet("generate", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 	abiPath := flags.String("abi", "", "JSON ABI or compiler artifact file")
-	packageName := flags.String("package", "", "Go package name for the generated file")
+	packageName := flags.String("package", "generated", "Go package name for the generated file")
 	typeName := flags.String("type", "", "exported contract prefix, such as ERC20")
-	outputPath := flags.String("out", "", "generated Go file, or - for stdout")
+	outputPath := flags.String("out", "generated.go", "generated Go file, or - for stdout")
 	var events []string
 	flags.Func("event", "select an event name or canonical signature; may be repeated", func(value string) error {
 		events = append(events, value)
@@ -44,8 +44,8 @@ func run(args []string, stdout, stderr io.Writer) error {
 		}
 		return err
 	}
-	if *abiPath == "" || *packageName == "" || *typeName == "" || *outputPath == "" || flags.NArg() != 0 {
-		return fmt.Errorf("generate requires -abi, -package, -type, and -out, with no positional arguments")
+	if *abiPath == "" || *typeName == "" || flags.NArg() != 0 {
+		return fmt.Errorf("generate requires -abi and -type, with no positional arguments")
 	}
 	data, err := os.ReadFile(*abiPath)
 	if err != nil {
