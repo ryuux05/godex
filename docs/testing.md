@@ -67,6 +67,12 @@ replacement history, chain and contract isolation, and atomic failures. A local
 HTTP RPC fixture runs the service entry point through indexing, cancellation,
 and restart with a persisted cursor.
 
+The NFT indexer tests decode ERC721 Transfer logs and check owners, wallet
+balances, maximum uint256 and zero token IDs, self-transfers, burns, remints,
+historical ownership, replay, inclusive rollback, replacement history, chain and
+collection isolation, and atomic failures under INSERT and COPY. Its local HTTP
+RPC fixture exercises service startup, indexing, cancellation, and cursor resume.
+
 The configuration API tests use the public package to verify ABI-derived filters,
 contract-specific routing, event selectors and overloads, configuration snapshots,
 first-block/resume semantics, preflight chain identity, startup cancellation, and

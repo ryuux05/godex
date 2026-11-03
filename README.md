@@ -443,6 +443,7 @@ http.Handle("/metrics", promhttp.Handler())
 - [ERC20 Indexer](examples/erc20-indexer/) - Complete example with PostgreSQL storage
 - [Swap Indexer](examples/swap-indexer/) - Uniswap pool and swap activity across chains
 - [Delegation Tracker](examples/delegation-tracker/) - Governance delegates, voting-power rankings, and history with reorg recovery
+- [NFT Indexer](examples/nft-indexer/) - ERC721 owners, wallet inventories, holder rankings, and mint/burn history
 - See the [examples guide](examples/README.md) for run commands and use cases
 
 ## Documentation
