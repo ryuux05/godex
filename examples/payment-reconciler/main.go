@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/ryuux05/godex/examples/payment-reconciler/bindings"
 	"github.com/ryuux05/godex/pkg/core/utils"
 	"github.com/ryuux05/godex/pkg/godex"
 )
@@ -155,7 +156,7 @@ func watch(ctx context.Context, pool *pgxpool.Pool) error {
 	defer cancel()
 	indexer, err := godex.New(startup, godex.Config{
 		ChainID: chainID, RPC: filtered,
-		Contracts: []godex.Contract{{Address: token, ABI: erc20ABI, Events: []string{"Transfer"}}},
+		Contracts: []godex.Contract{bindings.ERC20Contract(token)},
 		Postgres:  &godex.PostgresConfig{Pool: pool, Handler: PaymentHandler{}},
 		FromBlock: from, ConfirmationDepth: depth,
 	})

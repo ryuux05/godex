@@ -37,6 +37,22 @@ func (f EventFields) String(name string) (string, error) {
 	return s, nil
 }
 
+// Address reads and normalizes a 20-byte hexadecimal EVM address.
+func (f EventFields) Address(name string) (Address, error) {
+	value, err := f.String(name)
+	if err != nil {
+		return "", err
+	}
+	value = strings.ToLower(value)
+	if !strings.HasPrefix(value, "0x") || len(value) != 42 {
+		return "", fmt.Errorf("field %q: expected a 20-byte hexadecimal address", name)
+	}
+	if _, err := hex.DecodeString(value[2:]); err != nil {
+		return "", fmt.Errorf("field %q: invalid address: %w", name, err)
+	}
+	return Address(value), nil
+}
+
 func (f EventFields) Bool(name string) (bool, error) {
 	v, err := f.value(name)
 	if err != nil {
@@ -139,4 +155,18 @@ func (f EventFields) Bytes(name string) ([]byte, error) {
 		}
 	}
 	return nil, fieldTypeError(name, "bytes or 0x-prefixed hexadecimal string", v)
+}
+
+// Bytes32 reads a bytes32 value or indexed dynamic-value hash without truncation.
+func (f EventFields) Bytes32(name string) ([32]byte, error) {
+	var result [32]byte
+	value, err := f.Bytes(name)
+	if err != nil {
+		return result, err
+	}
+	if len(value) != len(result) {
+		return result, fmt.Errorf("field %q: expected 32 bytes, got %d", name, len(value))
+	}
+	copy(result[:], value)
+	return result, nil
 }

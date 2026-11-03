@@ -1,0 +1,166 @@
+package bindings
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"math"
+	"math/big"
+	"testing"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/ryuux05/godex/pkg/core/decoder"
+	"github.com/ryuux05/godex/pkg/godex"
+)
+
+func TestRawLogToTypedCallback(t *testing.T) {
+	d := decoder.NewStandardDecoder()
+	if err := d.RegisterABI("token", TokenABI); err != nil {
+		t.Fatal(err)
+	}
+	log := godex.Log{
+		Address: "0x1111111111111111111111111111111111111111",
+		Topics: []string{
+			"0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef",
+			fmt.Sprintf("0x%064x", 1), fmt.Sprintf("0x%064x", 2),
+		},
+		Data:        fmt.Sprintf("0x%064x", new(big.Int).Lsh(big.NewInt(1), 200)),
+		BlockNumber: "0x7", BlockHash: "block-7", TransactionHash: "tx", LogIndex: "0x3",
+	}
+	raw, err := d.Decode("token", "1", log)
+	if err != nil || raw == nil {
+		t.Fatalf("decode: %v", err)
+	}
+	ctx := context.WithValue(context.Background(), struct{}{}, "context marker")
+	tx := &struct{ pgx.Tx }{}
+	failure := errors.New("application rejected transfer")
+	calls := 0
+	handlers := TokenHandlers{
+		OnAll:  func(context.Context, pgx.Tx, godex.Event, TokenAll) error { return nil },
+		OnPing: func(context.Context, pgx.Tx, godex.Event, TokenPing) error { return nil },
+		OnTransfer: func(gotCtx context.Context, gotTx pgx.Tx, meta godex.Event, event TokenTransfer) error {
+			calls++
+			var _ godex.Address = event.From
+			var _ *big.Int = event.Value
+			if gotCtx != ctx || gotTx != tx || meta.Id != raw.Id || meta.ChainId != "1" || meta.BlockNumber != 7 {
+				t.Fatal("transaction or event metadata changed")
+			}
+			if event.From != "0x0000000000000000000000000000000000000001" || event.To != "0x0000000000000000000000000000000000000002" {
+				t.Fatal("wrong transfer addresses")
+			}
+			if event.Value.Cmp(new(big.Int).Lsh(big.NewInt(1), 200)) != 0 {
+				t.Fatal("integer precision lost")
+			}
+			event.Value.SetInt64(0)
+			return failure
+		},
+	}
+	if err := handlers.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	if err := handlers.Handle(ctx, tx, *raw); !errors.Is(err, failure) {
+		t.Fatalf("callback error lost: %v", err)
+	}
+	if calls != 1 || raw.Fields["value"].(*big.Int).Sign() == 0 {
+		t.Fatal("callback count or integer copy incorrect")
+	}
+	delete(raw.Fields, "value")
+	if err := handlers.Handle(ctx, tx, *raw); !errors.Is(err, godex.ErrFieldNotFound) {
+		t.Fatalf("missing field accepted: %v", err)
+	}
+	if calls != 1 {
+		t.Fatal("malformed event reached application callback")
+	}
+	if err := handlers.Handle(ctx, tx, godex.Event{EventType: "Unknown"}); err == nil {
+		t.Fatal("unknown event accepted")
+	}
+	if err := (TokenHandlers{}).Handle(ctx, tx, *raw); err == nil {
+		t.Fatal("missing callbacks accepted")
+	}
+	if TokenContract(log.Address).ABI != TokenABI {
+		t.Fatal("contract does not select generated ABI")
+	}
+	if _, err := ParseTokenPing(godex.Event{EventType: "Ping"}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func allEvent() godex.Event {
+	maximum := new(big.Int).Sub(new(big.Int).Lsh(big.NewInt(1), 256), big.NewInt(1))
+	minimum := new(big.Int).Neg(new(big.Int).Lsh(big.NewInt(1), 255))
+	return godex.Event{EventType: "All", Fields: godex.EventFields{
+		"u8": uint64(255), "u16": uint64(65535), "u32": uint64(math.MaxUint32), "u64": uint64(math.MaxUint64),
+		"u24": big.NewInt(16777215), "wide": maximum,
+		"i8": int64(-128), "i16": int64(-32768), "i32": int64(math.MinInt32), "i64": int64(math.MinInt64),
+		"i24": big.NewInt(-8388608), "signed": minimum,
+		"flag": false, "account": "0xAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", "text": "hello",
+		"blob": []byte{1, 2}, "hash": [32]byte{3}, "indexedText": [32]byte{4}, "indexedBlob": [32]byte{5}, "arg19": true,
+	}}
+}
+
+func TestGeneratedSolidityTypesAndCopies(t *testing.T) {
+	raw := allEvent()
+	event, err := ParseTokenAll(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var _ uint8 = event.U8
+	var _ uint16 = event.U16
+	var _ uint32 = event.U32
+	var _ uint64 = event.U64
+	var _ int8 = event.I8
+	var _ int16 = event.I16
+	var _ int32 = event.I32
+	var _ int64 = event.I64
+	var _ *big.Int = event.U24
+	var _ *big.Int = event.I24
+	var _ [32]byte = event.IndexedText
+	var _ [32]byte = event.IndexedBlob
+	if event.U8 != 255 || event.U16 != 65535 || event.U32 != math.MaxUint32 || event.U64 != math.MaxUint64 {
+		t.Fatal("unsigned boundary changed")
+	}
+	if event.I8 != -128 || event.I16 != -32768 || event.I32 != math.MinInt32 || event.I64 != math.MinInt64 {
+		t.Fatal("signed boundary changed")
+	}
+	if event.Account != "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" || event.Text != "hello" || !event.Arg19 || event.Flag {
+		t.Fatal("typed values changed")
+	}
+	if event.U24.String() != "16777215" || event.I24.String() != "-8388608" {
+		t.Fatal("non-native integer width changed")
+	}
+	if event.Hash[0] != 3 || event.IndexedText[0] != 4 || event.IndexedBlob[0] != 5 {
+		t.Fatal("bytes32 or indexed hash changed")
+	}
+	event.Blob[0] = 99
+	event.Wide.SetInt64(0)
+	event.Signed.SetInt64(0)
+	if raw.Fields["blob"].([]byte)[0] != 1 || raw.Fields["wide"].(*big.Int).Sign() == 0 || raw.Fields["signed"].(*big.Int).Sign() == 0 {
+		t.Fatal("generated values alias the raw event")
+	}
+}
+
+func TestGeneratedParsersRejectMalformedValues(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		value any
+	}{
+		{"u8", 256}, {"u16", 65536}, {"u32", new(big.Int).Lsh(big.NewInt(1), 32)}, {"u64", new(big.Int).Lsh(big.NewInt(1), 64)},
+		{"u24", 16777216}, {"wide", new(big.Int).Lsh(big.NewInt(1), 256)}, {"wide", -1}, {"wide", float64(1)},
+		{"i8", 128}, {"i8", -129}, {"i16", 32768}, {"i16", -32769}, {"i32", int64(2147483648)},
+		{"i64", new(big.Int).Lsh(big.NewInt(1), 63)}, {"i24", 8388608}, {"i24", -8388609},
+		{"signed", new(big.Int).Lsh(big.NewInt(1), 255)},
+		{"signed", new(big.Int).Sub(new(big.Int).Neg(new(big.Int).Lsh(big.NewInt(1), 255)), big.NewInt(1))},
+		{"account", "not-an-address"}, {"flag", "false"}, {"text", 7}, {"hash", []byte{1}}, {"indexedText", []byte{1}}, {"indexedBlob", nil},
+	} {
+		raw := allEvent()
+		raw.Fields[tc.name] = tc.value
+		if _, err := ParseTokenAll(raw); err == nil {
+			t.Errorf("accepted malformed %s=%v", tc.name, tc.value)
+		}
+	}
+	raw := allEvent()
+	raw.EventType = "Transfer"
+	if _, err := ParseTokenAll(raw); err == nil {
+		t.Fatal("accepted wrong event type")
+	}
+}

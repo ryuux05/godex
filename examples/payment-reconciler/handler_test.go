@@ -9,6 +9,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/ryuux05/godex/adapters/sink/postgres"
+	"github.com/ryuux05/godex/examples/payment-reconciler/bindings"
 	"github.com/ryuux05/godex/internal/testutil"
 	"github.com/ryuux05/godex/pkg/core/decoder"
 	"github.com/ryuux05/godex/pkg/godex"
@@ -38,7 +39,7 @@ func transferLog(block, index uint64, from, to string, amount *big.Int) godex.Lo
 func decodeTransfers(t *testing.T, chain string, logs ...godex.Log) []godex.Event {
 	t.Helper()
 	d := decoder.NewStandardDecoder()
-	require.NoError(t, d.RegisterABI("payments", erc20ABI))
+	require.NoError(t, d.RegisterABI("payments", bindings.ERC20ABI))
 	events := make([]godex.Event, 0, len(logs))
 	for _, log := range logs {
 		log.TransactionHash += "-chain-" + chain
