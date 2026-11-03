@@ -3,20 +3,17 @@ package main
 import (
 	"context"
 	_ "embed"
-	"fmt"
 	"strings"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/ryuux05/godex/adapters/sink/postgres"
+	"github.com/ryuux05/godex/examples/payment-reconciler/bindings"
 	"github.com/ryuux05/godex/pkg/godex"
 )
 
 //go:embed schema.sql
 var applicationSchema string
-
-//go:embed erc20_abi.json
-var erc20ABI string
 
 type PaymentHandler struct{}
 
@@ -31,29 +28,16 @@ func prepareApplication(ctx context.Context, pool *pgxpool.Pool) error {
 }
 
 func (PaymentHandler) Handle(ctx context.Context, tx pgx.Tx, event godex.Event) error {
-	if event.EventType != "Transfer" {
-		return fmt.Errorf("unsupported payment event %q", event.EventType)
-	}
-	from, err := event.Fields.String("from")
-	if err != nil {
-		return err
-	}
-	to, err := event.Fields.String("to")
-	if err != nil {
-		return err
-	}
-	amount, err := event.Fields.BigInt("value")
-	if err != nil {
-		return err
-	}
-	if amount.Sign() < 0 || amount.BitLen() > 256 {
-		return fmt.Errorf("transfer amount must fit uint256")
-	}
-	_, err = tx.Exec(ctx, `INSERT INTO payment_transfers
+	handlers := bindings.ERC20Handlers{OnTransfer: storePayment}
+	return handlers.Handle(ctx, tx, event)
+}
+
+func storePayment(ctx context.Context, tx pgx.Tx, event godex.Event, transfer bindings.ERC20Transfer) error {
+	_, err := tx.Exec(ctx, `INSERT INTO payment_transfers
 		(chain_id,event_id,token_address,from_address,to_address,amount,block_num,log_index,tx_hash)
 		VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
-		event.ChainId, event.Id, strings.ToLower(event.Address), strings.ToLower(from),
-		strings.ToLower(to), amount.String(), event.BlockNumber, event.LogIndex, event.TransactionHash)
+		event.ChainId, event.Id, strings.ToLower(event.Address), string(transfer.From),
+		string(transfer.To), transfer.Value.String(), event.BlockNumber, event.LogIndex, event.TransactionHash)
 	return err
 }
 

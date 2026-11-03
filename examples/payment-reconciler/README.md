@@ -13,6 +13,17 @@ This example uses the [ERC20 Transfer event](https://eips.ethereum.org/EIPS/eip-
 Amounts are exact integers in the selected token's raw units. Choose a token
 whose Transfer values represent the units credited to the recipient.
 
+The payment callback receives a generated `bindings.ERC20Transfer`, with typed
+addresses and an exact `*big.Int` value. Regenerate its binding after ABI changes:
+
+```sh
+go generate ./examples/payment-reconciler
+```
+
+See [typed handler generation](../../docs/codegen.md) to generate bindings for
+another ABI. Generated files are committed, so running the example does not
+require a generation step.
+
 ## Set up the checkout database
 
 From the repository root, start PostgreSQL and initialize the invoice schema:

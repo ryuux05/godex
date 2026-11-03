@@ -89,6 +89,20 @@ function handlers, sparse windows, restart, and replacement-branch rollback unde
 both INSERT and COPY. Field accessor tests check exact integers, overflow,
 missing fields, and independent copies.
 
+## Typed binding generation
+
+`go test ./pkg/codegen ./cmd/godex ./pkg/core/types` checks ABI selection, artifacts,
+name collisions, unsupported types, safe file replacement, and strict field
+accessors. Generator tests compile bindings for every example ABI in a separate
+consumer module. That module executes typed callbacks, checks metadata and
+transaction forwarding, exact integer bounds, indexed hashes, unnamed fields,
+and independent copies of mutable values.
+
+The payment reconciler uses its generated bindings in the existing PostgreSQL
+INSERT/COPY, replay, rollback, and live checkout tests. A freshness test compares
+its committed binding with generated output. Run `go generate ./examples/payment-reconciler`
+when changing its ABI or the generator.
+
 ## Fuzz tests
 
 Seed inputs run with the normal test suite. To explore beyond them:

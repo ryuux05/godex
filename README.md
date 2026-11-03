@@ -73,6 +73,17 @@ clients, and tuning, see the [service integration guide](docs/sdk.md). A runnabl
 example is available with `go run ./examples/service`. The lower-level
 `NewProcessor` and `AddChainContext` APIs remain available.
 
+Generate typed event structs and PostgreSQL callbacks from your ABI:
+
+```sh
+go run ./cmd/godex generate -abi examples/erc20-indexer/erc20_abi.json \
+  -package token -type ERC20 -event Transfer -out bindings/token/erc20_gen.go
+```
+
+Use `token.ERC20Handlers.OnTransfer` to receive `token.ERC20Transfer` with typed
+`From`, `To`, and `Value` fields. See [typed handler generation](docs/codegen.md)
+and the [payment reconciler](examples/payment-reconciler/) for a working integration.
+
 ## Configuration
 
 ### Processor Options
@@ -450,6 +461,7 @@ http.Handle("/metrics", promhttp.Handler())
 ## Documentation
 
 - [Service Integration Guide](docs/sdk.md) - Simple setup, borrowed resources, and handler functions
+- [Typed Handler Generation](docs/codegen.md) - Generate Go event types and callbacks from ABIs
 - [Architecture Overview](docs/architecture.md) - System architecture and design principles
 - [Processor Guide](docs/processor.md) - Processor configuration and behavior
 - [Decoder Guide](docs/decoder.md) - Event decoding and routing

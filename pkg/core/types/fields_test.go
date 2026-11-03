@@ -55,6 +55,34 @@ func TestIntegerAccessorsRejectOverflow(t *testing.T) {
 	assert.ErrorContains(t, err, "int64 range")
 }
 
+func TestAddressAndBytes32Accessors(t *testing.T) {
+	address, err := (godex.EventFields{"account": "0xAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}).Address("account")
+	require.NoError(t, err)
+	assert.Equal(t, godex.Address("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"), address)
+	address, err = (godex.EventFields{"account": string(godex.ZeroAddress)}).Address("account")
+	require.NoError(t, err)
+	assert.Equal(t, godex.ZeroAddress, address)
+	for _, value := range []any{nil, 7, "0xabc", "0xzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"} {
+		_, err := (godex.EventFields{"account": value}).Address("account")
+		assert.Error(t, err)
+	}
+	original := make([]byte, 32)
+	original[0] = 7
+	hash, err := (godex.EventFields{"hash": original}).Bytes32("hash")
+	require.NoError(t, err)
+	assert.Equal(t, byte(7), hash[0])
+	hash[0] = 9
+	assert.Equal(t, byte(7), original[0])
+	for _, value := range []any{[]byte{}, make([]byte, 31), make([]byte, 33), "0x01", nil} {
+		_, err := (godex.EventFields{"hash": value}).Bytes32("hash")
+		assert.Error(t, err)
+	}
+	_, err = (godex.EventFields{}).Address("missing")
+	assert.ErrorIs(t, err, godex.ErrFieldNotFound)
+	_, err = (godex.EventFields{}).Bytes32("missing")
+	assert.ErrorIs(t, err, godex.ErrFieldNotFound)
+}
+
 func TestFieldAccessorsAreStrictAndCopyBytes(t *testing.T) {
 	original := []byte{1, 2}
 	fixed := [32]byte{3}

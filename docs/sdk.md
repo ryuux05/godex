@@ -117,6 +117,10 @@ collector at both the processor and sink layers.
 
 ## Function handlers and rollback
 
+To generate typed event structs and transaction callbacks from an ABI, use
+[`godex generate`](codegen.md). Generated handlers fit the same PostgreSQL
+transaction and rollback interfaces described below.
+
 A `postgres.HandlerFunc` adapts one event function. When writing application
 projections, use `postgres.HandlerFuncs` with **both** callbacks:
 
